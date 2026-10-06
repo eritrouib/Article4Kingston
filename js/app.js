@@ -41,17 +41,18 @@ const map = L.map('map', { zoomControl: true, preferCanvas: false }).setView([51
 const OSM_URL = 'https://tile.openstreetmap.org/{z}/{x}/{y}.png';
 const OSM_ATTR = '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors';
 const ESRI = 'https://server.arcgisonline.com/ArcGIS/rest/services';
+const DEFAULT_BASEMAP = 'Light grey (Esri)';
 const basemaps = {
-  'Streets (grey)': L.tileLayer(OSM_URL, { maxZoom: 19, attribution: OSM_ATTR, className: 'tiles-grey' }),
-  'Streets (colour)': L.tileLayer(OSM_URL, { maxZoom: 19, attribution: OSM_ATTR }),
   'Light grey (Esri)': L.tileLayer(`${ESRI}/Canvas/World_Light_Gray_Base/MapServer/tile/{z}/{y}/{x}`, {
     maxZoom: 19, maxNativeZoom: 16, attribution: 'Basemap &copy; Esri',
   }),
+  'Streets (grey)': L.tileLayer(OSM_URL, { maxZoom: 19, attribution: OSM_ATTR, className: 'tiles-grey' }),
+  'Streets (colour)': L.tileLayer(OSM_URL, { maxZoom: 19, attribution: OSM_ATTR }),
   'Aerial (Esri)': L.tileLayer(`${ESRI}/World_Imagery/MapServer/tile/{z}/{y}/{x}`, {
     maxZoom: 19, attribution: 'Imagery &copy; Esri, Maxar, Earthstar Geographics',
   }),
 };
-basemaps['Streets (grey)'].addTo(map);
+basemaps[DEFAULT_BASEMAP].addTo(map);
 const layerControl = L.control.layers(basemaps, {}, { collapsed: true }).addTo(map);
 
 // If the current background map fails to load (provider down, or blocked on
@@ -59,7 +60,7 @@ const layerControl = L.control.layers(basemaps, {}, { collapsed: true }).addTo(m
 (function basemapFallback() {
   const fallbackOrder = ['Light grey (Esri)', 'Streets (grey)', 'Aerial (Esri)'];
   const tried = new Set();
-  let current = 'Streets (grey)';
+  let current = DEFAULT_BASEMAP;
   for (const [name, layer] of Object.entries(basemaps)) {
     let errors = 0;
     let loaded = 0;
