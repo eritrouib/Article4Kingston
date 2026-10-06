@@ -431,8 +431,10 @@ function checkAgainstFeatures(lat, lon, fc, metres = 25) {
 
 /**
  * Run a full check for a location.
- * deps: {fetch, a4Areas (FeatureCollection|null), a4Directions ({ref: entity}),
- *        legacyA4 (FeatureCollection), boundary (FeatureCollection), nearMetres}
+ * deps: {fetch, a4Areas (FeatureCollection|null, downloaded live at page load),
+ *        a4Directions ({ref: entity}), offlineA4 (official snapshot saved in the repo,
+ *        with .metadata.downloaded), legacyA4 (hand-digitised 2022 polygons, last resort),
+ *        boundary (FeatureCollection), nearMetres}
  */
 async function checkLocation(loc, deps) {
   const nearMetres = deps.nearMetres ?? 25;
@@ -488,17 +490,24 @@ async function checkLocation(loc, deps) {
   }
 
   // 2. Local geometry cross-check (distance to boundary, and fallback when offline)
-  const localFc = deps.a4Areas && deps.a4Areas.features && deps.a4Areas.features.length ? deps.a4Areas : deps.legacyA4;
+  const hasFeatures = (fc) => !!(fc && fc.features && fc.features.length);
+  const localFc = hasFeatures(deps.a4Areas) ? deps.a4Areas
+    : hasFeatures(deps.offlineA4) ? deps.offlineA4
+      : deps.legacyA4;
   const usingLegacy = localFc === deps.legacyA4;
+  const usingSnapshot = localFc === deps.offlineA4;
   if (localFc) {
     const local = checkAgainstFeatures(loc.lat, loc.lon, localFc, nearMetres);
     if (!live) {
-      result.article4.method = usingLegacy ? 'offline-legacy' : 'offline';
+      result.article4.method = usingLegacy ? 'offline-legacy' : usingSnapshot ? 'offline-snapshot' : 'offline';
       result.article4.status = local.inside.length ? 'inside' : 'outside';
       result.article4.areas = local.inside.map(({ feature }) => featureToArea(feature));
       result.article4.near = local.near.map(({ feature, distance }) => ({ ...featureToArea(feature), distance }));
       if (usingLegacy) {
         warnings.push('Offline copy is the 2022 data recovered from this repository. It does not include the Seething Wells (2021) or North/South Lodge (2023) directions.');
+      } else if (usingSnapshot) {
+        const saved = deps.offlineA4.metadata && deps.offlineA4.metadata.downloaded;
+        warnings.push(`Used the official Article 4 boundaries saved in this tool${saved ? ` on ${saved.slice(0, 10)}` : ''}. Directions made or changed since then won't show.`);
       }
     } else if (!usingLegacy) {
       // Add distances to live near-boundary list; flag edge proximity when inside.

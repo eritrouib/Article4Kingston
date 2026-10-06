@@ -187,3 +187,23 @@ test('CSV column detection and row parsing', () => {
   assert.deepEqual(parts.addressParts, ['Address1', 'Address2', 'Town']);
   assert.equal(rowToQuery({ Address1: '1 High St', Address2: '', Town: 'Kingston', Postcode: 'KT1 1EU' }, parts).text, '1 High St, Kingston, KT1 1EU');
 });
+
+test('offline fallback prefers the saved official copy over the 2022 polygons', async () => {
+  const fetch = mockFetch([[/planning\.data/, new Error('network down')]]);
+  const snapshot = {
+    type: 'FeatureCollection',
+    metadata: { downloaded: '2026-10-01T06:17:00+00:00' },
+    features: legacy.features.map((f, i) => ({
+      ...f, properties: { entity: 7010010324 + i, name: `Official area ${i + 1}`, 'article-4-direction': 'A4D2' },
+    })),
+  };
+  const r = await checkLocation({ ...INSIDE, label: 't', precision: 'exact' }, {
+    fetch, offlineA4: snapshot, legacyA4: legacy, boundary, a4Directions: directions,
+  });
+  assert.equal(r.article4.method, 'offline-snapshot');
+  assert.equal(r.article4.status, 'inside');
+  assert.equal(r.article4.areas[0].name, 'Official area 1');
+  assert.equal(r.article4.directions[0].name, directions.A4D2.name);
+  assert.ok(r.warnings.some((w) => /saved in this tool on 2026-10-01/.test(w)));
+  assert.ok(!r.warnings.some((w) => /Seething Wells/.test(w)), 'no legacy warning');
+});

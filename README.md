@@ -24,7 +24,8 @@ A web tool to help Local Land Charges (LLC) officers at the Royal Borough of Kin
 | Article 4 areas & directions, conservation areas, listed buildings, TPO areas, flood zones, green belt, etc. | [planning.data.gov.uk](https://www.planning.data.gov.uk) (MHCLG Planning Data), queried live |
 | Postcode locations | [postcodes.io](https://postcodes.io) (ONS Postcode Directory) |
 | Address matching | OpenStreetMap Nominatim, limited to the borough, 1 request/second |
-| Borough boundary, offline Article 4 fallback | `data/` in this repo (recovered from the original 2022 shapefiles) |
+| Borough boundary | London Datastore statistical GIS boundaries (OGL), in `data/` |
+| Offline Article 4 backup | A saved copy of the official Planning Data boundaries, refreshed monthly (see below) |
 
 Kingston publishes its Article 4 data to Planning Data: currently three directions — **Seething Wells Filter Beds (2021)**, **commercial, business and service to residential (Aug 2022)**, and **North Lodge and South Lodge (2023)** — across ~114 mapped areas. The original version of this repo only had the 2022 direction as four merged polygons, so it would have missed the other two.
 
@@ -34,7 +35,7 @@ Kingston publishes its Article 4 data to Planning Data: currently three directio
 2. A point query to Planning Data returns every designation containing the point.
 3. A second query over a small square around the point finds things *near* the property (listed buildings, trees, boundaries running close by).
 4. The Article 4 answer is cross-checked against Kingston's Article 4 boundaries downloaded at page load; disagreements are flagged.
-5. If Planning Data can't be reached, the Article 4 check falls back to `data/article4-legacy-2022.geojson` and the result says so clearly.
+5. If Planning Data can't be reached, the Article 4 check uses the saved copy of the official boundaries, and the result says so and shows the date it was saved.
 
 ## Important limits
 
@@ -52,9 +53,21 @@ js/data.js                 bundled copy of data/ (generated)
 js/lookup.js               parsing, geocoding, Planning Data queries, geometry, CSV mapping (no DOM)
 js/app.js                  map, single-search and batch UI
 data/kingston-boundary.geojson
-data/article4-legacy-2022.geojson   offline fallback (recovered from the original shapefiles)
+data/article4-official.geojson     saved copy of the official Article 4 boundaries (generated)
+data/article4-legacy-2022.geojson  original hand-digitised 2022 polygons, used only until a saved copy exists
+scripts/update_offline_data.py     downloads the official boundaries into the saved copy
+.github/workflows/update-data.yml  runs that script monthly on GitHub
 tests/lookup.test.js       unit tests (mocked APIs)
 ```
+
+## Keeping the offline backup up to date
+
+The backup is only used when Planning Data is unreachable, but it should still match the official boundaries.
+
+- **On GitHub (nothing to install):** go to the repo's **Actions** tab → **Update offline Article 4 data** → **Run workflow**. It also runs by itself on the 1st of every month and commits only if something changed.
+- **On your computer:** with Python 3 installed, run `python scripts/update_offline_data.py` in the repo folder, then commit and push.
+
+If GitHub Actions can't push, enable it under Settings → Actions → General → Workflow permissions → "Read and write permissions".
 
 ## Running it
 
@@ -70,7 +83,7 @@ If your council network blocks `planning.data.gov.uk`, `api.postcodes.io` or `cd
 ```
 npm install
 npm test                 # unit tests
-npm run build-data       # regenerate js/data.js after changing anything in data/
+npm run build-data       # regenerate js/data.js after hand-editing anything in data/
 ```
 
 The scripts are plain (non-module) JavaScript so the page also works when opened from disk.

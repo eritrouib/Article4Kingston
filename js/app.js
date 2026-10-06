@@ -11,6 +11,7 @@ const {
 
 const state = {
   boundary: null,
+  offlineA4: null,
   legacyA4: null,
   a4Areas: null,
   a4Directions: {},
@@ -103,8 +104,9 @@ function directionLabel(ref) {
 }
 
 // Bundled data (js/data.js) is used when present, so the page works from file://.
+// js/data.js is the complete list of local data, so a missing key means "not saved yet".
 async function loadLocal(key, url) {
-  if (window.A4_DATA && window.A4_DATA[key]) return window.A4_DATA[key];
+  if (window.A4_DATA) return window.A4_DATA[key] || null;
   return loadJson(url);
 }
 
@@ -123,17 +125,23 @@ async function init() {
     map.fitBounds(state.layers.boundary.getBounds(), { padding: [10, 10] });
   } catch (e) { console.warn('boundary', e); }
 
+  // Saved copy of the official boundaries (made by scripts/update_offline_data.py).
   try {
-    state.legacyA4 = await loadLocal('legacyA4', 'data/article4-legacy-2022.geojson');
-    state.layers.legacy = L.geoJSON(state.legacyA4, {
-      style: styles.a4Legacy,
-      onEachFeature: (f, l) => l.bindPopup(popupFor(f.properties, 'Article 4 (2022 copy from this repo)')),
-    });
-    layerControl.addOverlay(state.layers.legacy, 'Article 4 – 2022 offline copy');
-  } catch (e) { console.warn('legacy', e); }
+    state.offlineA4 = await loadLocal('offlineA4', 'data/article4-official.geojson');
+  } catch (e) { state.offlineA4 = null; }
+  const haveSnapshot = !!(state.offlineA4 && state.offlineA4.features && state.offlineA4.features.length);
+  const savedOn = haveSnapshot && state.offlineA4.metadata ? String(state.offlineA4.metadata.downloaded || '').slice(0, 10) : '';
+
+  // Hand-digitised 2022 polygons: last resort only, if no official copy has been saved yet.
+  if (!haveSnapshot) {
+    try {
+      state.legacyA4 = await loadLocal('legacyA4', 'data/article4-legacy-2022.geojson');
+    } catch (e) { console.warn('legacy', e); }
+  }
 
   const [areas, dirs] = await Promise.allSettled([fetchArticle4Areas(fetch), fetchArticle4Directions(fetch)]);
-  if (dirs.status === 'fulfilled') state.a4Directions = dirs.value;
+  if (dirs.status === 'fulfilled' && Object.keys(dirs.value).length) state.a4Directions = dirs.value;
+  else if (haveSnapshot && state.offlineA4.directions) state.a4Directions = state.offlineA4.directions;
   renderDirectionsList();
 
   if (areas.status === 'fulfilled' && areas.value.features.length) {
@@ -145,9 +153,22 @@ async function init() {
     layerControl.addOverlay(state.layers.a4, 'Article 4 areas (live)');
     const nd = Object.keys(state.a4Directions).length;
     setStatus(`Live data: ${state.a4Areas.features.length} Article 4 areas · ${nd} direction${nd === 1 ? '' : 's'}`, 'ok');
-  } else {
-    if (state.layers.legacy) state.layers.legacy.addTo(map);
+  } else if (haveSnapshot) {
+    state.layers.a4 = L.geoJSON(state.offlineA4, {
+      style: styles.a4,
+      onEachFeature: (f, l) => l.bindPopup(popupFor(f.properties, `Article 4 direction area (saved ${savedOn})`)),
+    }).addTo(map);
+    layerControl.addOverlay(state.layers.a4, 'Article 4 areas (saved copy)');
+    setStatus(`Planning Data unreachable — using saved official Article 4 boundaries${savedOn ? ` from ${savedOn}` : ''}`, 'warn');
+  } else if (state.legacyA4) {
+    state.layers.legacy = L.geoJSON(state.legacyA4, {
+      style: styles.a4Legacy,
+      onEachFeature: (f, l) => l.bindPopup(popupFor(f.properties, 'Article 4 (2022 copy from this repo)')),
+    }).addTo(map);
+    layerControl.addOverlay(state.layers.legacy, 'Article 4 – 2022 offline copy');
     setStatus('Planning Data unreachable — using 2022 offline copy for Article 4 only', 'warn');
+  } else {
+    setStatus('Planning Data unreachable — Article 4 can\'t be checked', 'warn');
   }
 
   loadConservationAreas();
@@ -233,7 +254,7 @@ async function runSingle(text, chosenLoc) {
 function deps() {
   return {
     fetch, a4Areas: state.a4Areas, a4Directions: state.a4Directions,
-    legacyA4: state.legacyA4, boundary: state.boundary, nearMetres: state.nearMetres,
+    offlineA4: state.offlineA4, legacyA4: state.legacyA4, boundary: state.boundary, nearMetres: state.nearMetres,
   };
 }
 
@@ -255,6 +276,7 @@ function renderResult(r) {
   const methodNote = {
     live: 'Checked live against planning.data.gov.uk',
     offline: 'Checked against downloaded Article 4 boundaries (live point query failed)',
+    'offline-snapshot': 'Checked against the saved copy of the official boundaries (offline)',
     'offline-legacy': 'Checked against the 2022 copy held in this repository (offline)',
   }[a4.method] || '';
 
