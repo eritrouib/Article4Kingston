@@ -48,6 +48,7 @@ Kingston publishes its Article 4 data to Planning Data: currently three directio
 ```
 index.html                 page
 css/app.css                styles (incl. print and mobile layout)
+js/data.js                 bundled copy of data/ (generated)
 js/lookup.js               parsing, geocoding, Planning Data queries, geometry, CSV mapping (no DOM)
 js/app.js                  map, single-search and batch UI
 data/kingston-boundary.geojson
@@ -55,21 +56,24 @@ data/article4-legacy-2022.geojson   offline fallback (recovered from the origina
 tests/lookup.test.js       unit tests (mocked APIs)
 ```
 
+## Running it
+
+No installation or build is needed.
+
+- **On your computer:** double-click `index.html`. It opens in your browser and works as long as you are online (it needs the map tiles and the live planning data).
+- **For colleagues:** push to GitHub with Pages enabled (Settings → Pages → Deploy from branch → `main`, `/ (root)`), and share the link.
+
+If your council network blocks `planning.data.gov.uk`, `api.postcodes.io` or `cdn.jsdelivr.net`, the page will say so in the status pill at the top; ask IT to allow those sites.
+
 ## Development
-
-It's a static site — no build step. To run locally, serve the folder (ES modules need http, not `file://`):
-
-```
-python -m http.server 8000
-# open http://localhost:8000
-```
-
-Tests:
 
 ```
 npm install
-npm test
+npm test                 # unit tests
+npm run build-data       # regenerate js/data.js after changing anything in data/
 ```
+
+The scripts are plain (non-module) JavaScript so the page also works when opened from disk.
 
 ## Licence & attribution
 

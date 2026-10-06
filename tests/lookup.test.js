@@ -2,11 +2,13 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import proj4 from 'proj4';
-import {
+import '../js/lookup.js'; // plain script: sets globalThis.A4Lookup
+
+const {
   parseQuery, normalisePostcode, geocode, checkLocation, checkAgainstFeatures,
   pointInGeometry, distanceToBoundary, bufferWkt, detectColumns, rowToQuery, resultToRow,
   bngToLatLon, latLonToBng,
-} from '../js/lookup.js';
+} = globalThis.A4Lookup;
 
 const legacy = JSON.parse(readFileSync(new URL('../data/article4-legacy-2022.geojson', import.meta.url)));
 const boundary = JSON.parse(readFileSync(new URL('../data/kingston-boundary.geojson', import.meta.url)));

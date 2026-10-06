@@ -1,8 +1,11 @@
-import {
+(function () {
+'use strict';
+
+const {
   parseQuery, geocode, checkLocation, fetchArticle4Areas, fetchArticle4Directions,
   GROUPS, entityUrl, detectColumns, rowToQuery, resultToRow, latLonToBng, sleep,
   PLANNING_API, KINGSTON_BBOX,
-} from './lookup.js';
+} = window.A4Lookup;
 
 /* global L, proj4, Papa */
 
@@ -70,6 +73,12 @@ function directionLabel(ref) {
   return d ? `${ref} – ${d.name}` : ref;
 }
 
+// Bundled data (js/data.js) is used when present, so the page works from file://.
+async function loadLocal(key, url) {
+  if (window.A4_DATA && window.A4_DATA[key]) return window.A4_DATA[key];
+  return loadJson(url);
+}
+
 async function loadJson(url) {
   const r = await fetch(url);
   if (!r.ok) throw new Error(`HTTP ${r.status}`);
@@ -79,14 +88,14 @@ async function loadJson(url) {
 async function init() {
   setStatus('Loading planning data…', 'loading');
   try {
-    state.boundary = await loadJson('data/kingston-boundary.geojson');
+    state.boundary = await loadLocal('boundary', 'data/kingston-boundary.geojson');
     state.layers.boundary = L.geoJSON(state.boundary, { style: styles.boundary, interactive: false }).addTo(map);
     layerControl.addOverlay(state.layers.boundary, 'Borough boundary');
     map.fitBounds(state.layers.boundary.getBounds(), { padding: [10, 10] });
   } catch (e) { console.warn('boundary', e); }
 
   try {
-    state.legacyA4 = await loadJson('data/article4-legacy-2022.geojson');
+    state.legacyA4 = await loadLocal('legacyA4', 'data/article4-legacy-2022.geojson');
     state.layers.legacy = L.geoJSON(state.legacyA4, {
       style: styles.a4Legacy,
       onEachFeature: (f, l) => l.bindPopup(popupFor(f.properties, 'Article 4 (2022 copy from this repo)')),
@@ -495,3 +504,4 @@ function download(name, text) {
 }
 
 init();
+})();

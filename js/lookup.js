@@ -1,15 +1,20 @@
+(function () {
+'use strict';
+
+// Core lookup logic (plain script, no modules, so the page also works when opened
+// straight from disk). Exposes everything on globalThis.A4Lookup.
 // Core lookup logic: input parsing, geocoding, planning-constraint queries and
 // geometry helpers. No DOM access here so it can be tested in Node.
 
-export const PLANNING_API = 'https://www.planning.data.gov.uk';
-export const POSTCODES_API = 'https://api.postcodes.io';
-export const NOMINATIM_API = 'https://nominatim.openstreetmap.org';
-export const KINGSTON_ORG_ENTITY = 188; // Royal Borough of Kingston upon Thames on planning.data.gov.uk
+const PLANNING_API = 'https://www.planning.data.gov.uk';
+const POSTCODES_API = 'https://api.postcodes.io';
+const NOMINATIM_API = 'https://nominatim.openstreetmap.org';
+const KINGSTON_ORG_ENTITY = 188; // Royal Borough of Kingston upon Thames on planning.data.gov.uk
 
 // Kingston bounding box (lon/lat) used to bias/limit address searches.
-export const KINGSTON_BBOX = [-0.3308, 51.3263, -0.2387, 51.4373];
+const KINGSTON_BBOX = [-0.3308, 51.3263, -0.2387, 51.4373];
 
-export const BNG_PROJ4 =
+const BNG_PROJ4 =
   '+proj=tmerc +lat_0=49 +lon_0=-2 +k=0.9996012717 +x_0=400000 +y_0=-100000 ' +
   '+ellps=airy +towgs84=446.448,-125.157,542.06,0.15,0.247,0.842,-20.489 +units=m +no_defs';
 
@@ -17,7 +22,7 @@ export const BNG_PROJ4 =
 // Dataset metadata: how each planning.data.gov.uk dataset is labelled and grouped.
 // Anything not listed still appears, under "Other".
 // ---------------------------------------------------------------------------
-export const GROUPS = {
+const GROUPS = {
   a4: 'Article 4',
   heritage: 'Heritage',
   trees: 'Trees',
@@ -29,7 +34,7 @@ export const GROUPS = {
   admin: 'Administrative areas',
 };
 
-export const DATASETS = {
+const DATASETS = {
   'article-4-direction-area': { label: 'Article 4 direction area', group: 'a4' },
   'conservation-area': { label: 'Conservation area', group: 'heritage' },
   'listed-building': { label: 'Listed building', group: 'heritage' },
@@ -81,7 +86,7 @@ export const DATASETS = {
   'road': { label: 'Road', group: 'admin' },
 };
 
-export function datasetInfo(dataset) {
+function datasetInfo(dataset) {
   return DATASETS[dataset] || { label: humanise(dataset), group: 'other' };
 }
 
@@ -96,12 +101,12 @@ function humanise(s) {
 const POSTCODE_RE = /^([A-Z]{1,2}\d[A-Z\d]?)\s*(\d[A-Z]{2})$/i;
 const POSTCODE_IN_TEXT_RE = /\b([A-Z]{1,2}\d[A-Z\d]?)\s*(\d[A-Z]{2})\b/i;
 
-export function normalisePostcode(pc) {
+function normalisePostcode(pc) {
   const m = String(pc || '').trim().match(POSTCODE_RE);
   return m ? `${m[1].toUpperCase()} ${m[2].toUpperCase()}` : null;
 }
 
-export function extractPostcode(text) {
+function extractPostcode(text) {
   const m = String(text || '').match(POSTCODE_IN_TEXT_RE);
   return m ? `${m[1].toUpperCase()} ${m[2].toUpperCase()}` : null;
 }
@@ -110,7 +115,7 @@ export function extractPostcode(text) {
  * Work out what kind of location the user typed.
  * Returns {type: 'postcode'|'bng'|'latlon'|'address', ...}
  */
-export function parseQuery(raw) {
+function parseQuery(raw) {
   const q = String(raw || '').trim();
   if (!q) return { type: 'empty' };
 
@@ -137,12 +142,12 @@ export function parseQuery(raw) {
 // ---------------------------------------------------------------------------
 // Coordinate conversion
 // ---------------------------------------------------------------------------
-export function bngToLatLon(proj4, easting, northing) {
+function bngToLatLon(proj4, easting, northing) {
   const [lon, lat] = proj4(BNG_PROJ4, 'WGS84', [easting, northing]);
   return { lat, lon };
 }
 
-export function latLonToBng(proj4, lat, lon) {
+function latLonToBng(proj4, lat, lon) {
   const [e, n] = proj4('WGS84', BNG_PROJ4, [lon, lat]);
   return { easting: Math.round(e), northing: Math.round(n) };
 }
@@ -168,7 +173,7 @@ async function getJson(fetchFn, url, { retries = 2 } = {}) {
   throw lastErr;
 }
 
-export function sleep(ms) {
+function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
@@ -182,7 +187,7 @@ export function sleep(ms) {
  *   precision: 'exact' (coordinates given), 'address' (matched address point),
  *              'street' (street-level match), 'postcode' (postcode centroid)
  */
-export async function geocode(parsed, { fetch: fetchFn, proj4, throttle } = {}) {
+async function geocode(parsed, { fetch: fetchFn, proj4, throttle } = {}) {
   switch (parsed.type) {
     case 'latlon':
       return {
@@ -215,7 +220,7 @@ export async function geocode(parsed, { fetch: fetchFn, proj4, throttle } = {}) 
   }
 }
 
-export async function geocodePostcode(fetchFn, postcode) {
+async function geocodePostcode(fetchFn, postcode) {
   const enc = encodeURIComponent(postcode);
   let data = await getJson(fetchFn, `${POSTCODES_API}/postcodes/${enc}`);
   let terminated = false;
@@ -237,7 +242,7 @@ export async function geocodePostcode(fetchFn, postcode) {
   };
 }
 
-export async function geocodeAddress(fetchFn, text) {
+async function geocodeAddress(fetchFn, text) {
   const [w, s, e, n] = KINGSTON_BBOX;
   const pad = 0.02;
   const params = new URLSearchParams({
@@ -270,7 +275,7 @@ function isCurrent(entity, today) {
 }
 
 /** Square polygon (WKT) of half-width `metres` around a point. */
-export function bufferWkt(lat, lon, metres) {
+function bufferWkt(lat, lon, metres) {
   const dLat = metres / 111320;
   const dLon = metres / (111320 * Math.cos((lat * Math.PI) / 180));
   const f = (x) => x.toFixed(7);
@@ -299,7 +304,7 @@ function absolute(u) {
  * Query planning.data.gov.uk for everything at a point, and everything within
  * `nearMetres` of it. Returns {at: entity[], near: entity[]} (current entities only).
  */
-export async function queryPlanningData(fetchFn, lat, lon, { nearMetres = 25, today } = {}) {
+async function queryPlanningData(fetchFn, lat, lon, { nearMetres = 25, today } = {}) {
   today = today || new Date().toISOString().slice(0, 10);
   const base = 'limit=100&exclude_field=geometry';
   const atParams = `${base}&latitude=${lat.toFixed(7)}&longitude=${lon.toFixed(7)}`;
@@ -320,7 +325,7 @@ function dedupe(list) {
 }
 
 /** Fetch Kingston's Article 4 directions (the legal instruments) keyed by reference. */
-export async function fetchArticle4Directions(fetchFn, orgEntity = KINGSTON_ORG_ENTITY) {
+async function fetchArticle4Directions(fetchFn, orgEntity = KINGSTON_ORG_ENTITY) {
   const list = await fetchAllEntities(fetchFn,
     `dataset=article-4-direction&organisation_entity=${orgEntity}&limit=100`);
   const byRef = {};
@@ -329,7 +334,7 @@ export async function fetchArticle4Directions(fetchFn, orgEntity = KINGSTON_ORG_
 }
 
 /** Fetch Kingston's Article 4 areas as GeoJSON (for the map and offline cross-checks). */
-export async function fetchArticle4Areas(fetchFn, orgEntity = KINGSTON_ORG_ENTITY) {
+async function fetchArticle4Areas(fetchFn, orgEntity = KINGSTON_ORG_ENTITY) {
   const features = [];
   let url = `${PLANNING_API}/entity.geojson?dataset=article-4-direction-area&organisation_entity=${orgEntity}&limit=500`;
   for (let page = 0; page < 10 && url; page++) {
@@ -374,7 +379,7 @@ function ringContains(ring, x, y) {
   return inside;
 }
 
-export function pointInGeometry(lat, lon, geometry) {
+function pointInGeometry(lat, lon, geometry) {
   return polygonsOf(geometry).some((poly) =>
     ringContains(poly[0], lon, lat) && !poly.slice(1).some((hole) => ringContains(hole, lon, lat)));
 }
@@ -389,7 +394,7 @@ function segDist(px, py, ax, ay, bx, by) {
 }
 
 /** Distance in metres from a point to the nearest edge of a (multi)polygon. */
-export function distanceToBoundary(lat, lon, geometry) {
+function distanceToBoundary(lat, lon, geometry) {
   const proj = toLocal(lat, lon);
   let best = Infinity;
   for (const poly of polygonsOf(geometry)) {
@@ -408,7 +413,7 @@ export function distanceToBoundary(lat, lon, geometry) {
  * Check a point against a FeatureCollection locally.
  * Returns {inside: Feature[], near: [{feature, distance}]} — near = outside but within `metres`.
  */
-export function checkAgainstFeatures(lat, lon, fc, metres = 25) {
+function checkAgainstFeatures(lat, lon, fc, metres = 25) {
   const inside = [];
   const near = [];
   for (const f of (fc && fc.features) || []) {
@@ -429,7 +434,7 @@ export function checkAgainstFeatures(lat, lon, fc, metres = 25) {
  * deps: {fetch, a4Areas (FeatureCollection|null), a4Directions ({ref: entity}),
  *        legacyA4 (FeatureCollection), boundary (FeatureCollection), nearMetres}
  */
-export async function checkLocation(loc, deps) {
+async function checkLocation(loc, deps) {
   const nearMetres = deps.nearMetres ?? 25;
   const warnings = [...(loc.warnings || [])];
   const result = {
@@ -560,7 +565,7 @@ function simplify(e) {
   };
 }
 
-export function entityUrl(entity) {
+function entityUrl(entity) {
   return `${PLANNING_API}/entity/${entity}`;
 }
 
@@ -577,7 +582,7 @@ const ALIASES = {
   lon: ['lon', 'lng', 'long', 'longitude'],
 };
 
-export function detectColumns(headers) {
+function detectColumns(headers) {
   const norm = (h) => String(h).trim().toLowerCase().replace(/[\s-]+/g, '_');
   const map = {};
   for (const [key, names] of Object.entries(ALIASES)) {
@@ -591,7 +596,7 @@ export function detectColumns(headers) {
 }
 
 /** Build a parsed query from one CSV row using detected columns. Prefers the most precise input. */
-export function rowToQuery(row, cols) {
+function rowToQuery(row, cols) {
   const v = (k) => (cols[k] !== undefined ? String(row[cols[k]] ?? '').trim() : '');
   const e = parseFloat(v('easting')), n = parseFloat(v('northing'));
   if (Number.isFinite(e) && Number.isFinite(n) && e > 1000 && n > 1000) {
@@ -618,7 +623,7 @@ export function rowToQuery(row, cols) {
 const yn = (b) => (b === true ? 'Y' : b === false ? 'N' : '');
 
 /** Flatten a check result into CSV output columns. */
-export function resultToRow(r) {
+function resultToRow(r) {
   const groupNames = (g) => r.designations.filter((d) => d.group === g)
     .map((d) => d.name ? `${d.label}: ${d.name}` : d.label).join('; ');
   const named = (ds) => r.designations.filter((d) => d.dataset === ds).map((d) => d.name || d.reference).join('; ');
@@ -653,3 +658,38 @@ export function resultToRow(r) {
     checked_at: r.checkedAt,
   };
 }
+
+
+globalThis.A4Lookup = {
+  PLANNING_API,
+  POSTCODES_API,
+  NOMINATIM_API,
+  KINGSTON_ORG_ENTITY,
+  KINGSTON_BBOX,
+  BNG_PROJ4,
+  GROUPS,
+  DATASETS,
+  datasetInfo,
+  normalisePostcode,
+  extractPostcode,
+  parseQuery,
+  bngToLatLon,
+  latLonToBng,
+  sleep,
+  geocode,
+  geocodePostcode,
+  geocodeAddress,
+  bufferWkt,
+  queryPlanningData,
+  fetchArticle4Directions,
+  fetchArticle4Areas,
+  pointInGeometry,
+  distanceToBoundary,
+  checkAgainstFeatures,
+  checkLocation,
+  entityUrl,
+  detectColumns,
+  rowToQuery,
+  resultToRow,
+};
+})();
