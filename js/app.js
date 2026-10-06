@@ -36,19 +36,47 @@ async function nominatimThrottle() {
 // ---------------------------------------------------------------------------
 const map = L.map('map', { zoomControl: true, preferCanvas: false }).setView([51.385, -0.29], 12);
 
+// All background maps here are free to use without an API key. (CARTO's
+// basemaps were dropped: since Aug 2026 they stamp "API KEY REQUIRED" on tiles.)
+const OSM_URL = 'https://tile.openstreetmap.org/{z}/{x}/{y}.png';
+const OSM_ATTR = '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors';
+const ESRI = 'https://server.arcgisonline.com/ArcGIS/rest/services';
 const basemaps = {
-  'Streets (grey)': L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
-    maxZoom: 20, attribution: '&copy; OpenStreetMap contributors &copy; CARTO',
+  'Streets (grey)': L.tileLayer(OSM_URL, { maxZoom: 19, attribution: OSM_ATTR, className: 'tiles-grey' }),
+  'Streets (colour)': L.tileLayer(OSM_URL, { maxZoom: 19, attribution: OSM_ATTR }),
+  'Light grey (Esri)': L.tileLayer(`${ESRI}/Canvas/World_Light_Gray_Base/MapServer/tile/{z}/{y}/{x}`, {
+    maxZoom: 19, maxNativeZoom: 16, attribution: 'Basemap &copy; Esri',
   }),
-  'OpenStreetMap': L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
-    maxZoom: 19, attribution: '&copy; OpenStreetMap contributors',
-  }),
-  'Aerial': L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
-    maxZoom: 19, attribution: 'Imagery &copy; Esri',
+  'Aerial (Esri)': L.tileLayer(`${ESRI}/World_Imagery/MapServer/tile/{z}/{y}/{x}`, {
+    maxZoom: 19, attribution: 'Imagery &copy; Esri, Maxar, Earthstar Geographics',
   }),
 };
 basemaps['Streets (grey)'].addTo(map);
 const layerControl = L.control.layers(basemaps, {}, { collapsed: true }).addTo(map);
+
+// If the current background map fails to load (provider down, or blocked on
+// this network), switch once to another provider so the map isn't blank.
+(function basemapFallback() {
+  const fallbackOrder = ['Light grey (Esri)', 'Streets (grey)', 'Aerial (Esri)'];
+  const tried = new Set();
+  let current = 'Streets (grey)';
+  for (const [name, layer] of Object.entries(basemaps)) {
+    let errors = 0;
+    let loaded = 0;
+    layer.on('add', () => { current = name; errors = 0; loaded = 0; });
+    layer.on('tileload', () => { loaded++; });
+    layer.on('tileerror', () => {
+      errors++;
+      if (current !== name || loaded > 0 || errors < 4) return;
+      tried.add(name);
+      const next = fallbackOrder.find((n) => n !== name && !tried.has(n));
+      if (!next) return;
+      map.removeLayer(layer);
+      basemaps[next].addTo(map);
+      console.warn(`Background map "${name}" failed to load; switched to "${next}".`);
+    });
+  }
+})();
 
 const styles = {
   a4: { color: '#b45309', weight: 2, fillColor: '#f59e0b', fillOpacity: 0.25 },

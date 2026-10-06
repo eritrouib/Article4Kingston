@@ -146,3 +146,6 @@ progress { flex: 1; min-width: 120px; height: 10px; }
   details { display: block; }
   details > * { display: block; }
 }
+
+/* Grey version of the OpenStreetMap background, so the coloured overlays stand out */
+.tiles-grey { filter: grayscale(1) contrast(0.92) brightness(1.06); }
