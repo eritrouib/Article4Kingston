@@ -162,22 +162,46 @@ function latLonToBng(proj4, lat, lon) {
 // ---------------------------------------------------------------------------
 // HTTP
 // ---------------------------------------------------------------------------
-async function getJson(fetchFn, url, { retries = 2 } = {}) {
+// Default time limit for a single request (ms). Adjustable for tests.
+const config = { requestTimeoutMs: 15000 };
+
+async function getJson(fetchFn, url, { retries = 1, timeoutMs = config.requestTimeoutMs } = {}) {
   let lastErr;
   for (let attempt = 0; attempt <= retries; attempt++) {
+    const ctrl = typeof AbortController !== 'undefined' ? new AbortController() : null;
+    let timer;
     try {
-      const res = await fetchFn(url, { headers: { Accept: 'application/json' } });
+      const timeout = new Promise((_, reject) => {
+        timer = setTimeout(() => { if (ctrl) ctrl.abort(); reject(Object.assign(new Error('timed out'), { timeout: true })); }, timeoutMs);
+      });
+      const res = await Promise.race([
+        fetchFn(url, { headers: { Accept: 'application/json' }, signal: ctrl ? ctrl.signal : undefined }),
+        timeout,
+      ]);
       if (res.status === 404) return { __notFound: true };
       if (res.status === 429 || res.status >= 500) throw new Error(`HTTP ${res.status}`);
       if (!res.ok) throw Object.assign(new Error(`HTTP ${res.status}`), { fatal: true, status: res.status });
-      return await res.json();
+      return await Promise.race([res.json(), timeout]);
     } catch (e) {
       lastErr = e;
-      if (e.fatal || attempt === retries) break;
-      await sleep(600 * (attempt + 1));
+      if (e.fatal || e.timeout || attempt === retries) break;
+      await sleep(500 * (attempt + 1));
+    } finally {
+      clearTimeout(timer);
     }
   }
   throw lastErr;
+}
+
+/** Reject if `promise` takes longer than `ms`. */
+function withTimeout(promise, ms) {
+  let timer;
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => {
+      timer = setTimeout(() => reject(Object.assign(new Error('timed out'), { timeout: true })), ms);
+    }),
+  ]).finally(() => clearTimeout(timer));
 }
 
 function sleep(ms) {
@@ -381,7 +405,7 @@ function wktParam(wkt, style = 'raw') {
 async function pointQuery(fetchFn, lat, lon) {
   const params = `limit=100&exclude_field=geometry&latitude=${lat.toFixed(7)}&longitude=${lon.toFixed(7)}`;
   for (let attempt = 0; attempt < 2; attempt++) {
-    const { list } = await entitySearch(fetchFn, params);
+    const { list } = await entitySearch(fetchFn, params, 3);
     if (looksSpatial(list)) return list;
     if (!list.length) return list; // outside England / nothing recorded
   }
@@ -391,9 +415,13 @@ async function pointQuery(fetchFn, lat, lon) {
 async function nearQuery(fetchFn, lat, lon, metres) {
   const wkt = bufferWkt(lat, lon, metres);
   for (const style of ['raw', 'encoded']) {
-    const { list } = await entitySearch(fetchFn,
-      `geometry_relation=intersects&geometry=${wktParam(wkt, style)}&limit=100&exclude_field=geometry`);
-    if (looksSpatial(list)) return list;
+    try {
+      const { list } = await entitySearch(fetchFn,
+        `geometry_relation=intersects&geometry=${wktParam(wkt, style)}&limit=100&exclude_field=geometry`, 2);
+      if (looksSpatial(list)) return list;
+    } catch (e) {
+      if (e.timeout) throw e;
+    }
   }
   return null; // couldn't get a trustworthy answer
 }
@@ -430,15 +458,19 @@ async function fetchEntityGeometry(fetchFn, entity) {
  * conservation area whose boundary follows the plot edge doesn't show as on the plot.
  */
 async function plotQuery(fetchFn, atList, lat, lon, today) {
-  const titles = atList.filter((e) => e.dataset === 'title-boundary').slice(0, 4);
+  const titles = atList.filter((e) => e.dataset === 'title-boundary').slice(0, 3);
   if (!titles.length) return null;
+  let failures = 0;
   const withGeom = await Promise.all(titles.map(async (t) => {
     try {
       const geometry = await fetchEntityGeometry(fetchFn, t.entity);
       return geometry ? { entity: t.entity, reference: t.reference, geometry, areaM2: geometryArea(geometry) } : null;
-    } catch { return null; }
+    } catch { failures++; return null; }
   }));
   const candidates = withGeom.filter(Boolean);
+  // A title was found at the point but its outline couldn't be fetched: that's
+  // "couldn't check", not "no plot".
+  if (!candidates.length && failures) throw new Error('Land Registry outline could not be fetched');
   if (!candidates.length) return null;
   // Freehold and leasehold titles can overlap; the smallest one containing the point
   // is almost always the property itself rather than an estate or block.
@@ -448,7 +480,7 @@ async function plotQuery(fetchFn, atList, lat, lon, today) {
   const base = `geometry_entity=${plot.entity}&limit=100&exclude_field=geometry`;
   const results = await Promise.all(['overlaps', 'within', 'contains'].map(async (rel) => {
     try {
-      const res = await entitySearch(fetchFn, `geometry_relation=${rel}&${base}`);
+      const res = await entitySearch(fetchFn, `geometry_relation=${rel}&${base}`, 1);
       return looksFiltered(res) ? res.list : null;
     } catch { return null; }
   }));
@@ -461,7 +493,7 @@ async function plotQuery(fetchFn, atList, lat, lon, today) {
  * Which checklist datasets have any records in this local authority.
  * true = published here, false = none published (or dataset doesn't exist), null = couldn't check.
  */
-async function fetchCoverage(fetchFn, ladEntity, datasets = CHECKLIST_DATASETS, concurrency = 6) {
+async function fetchCoverage(fetchFn, ladEntity, datasets = CHECKLIST_DATASETS, concurrency = 4) {
   const out = {};
   const queue = [...datasets];
   async function worker() {
@@ -469,7 +501,8 @@ async function fetchCoverage(fetchFn, ladEntity, datasets = CHECKLIST_DATASETS, 
       const ds = queue.shift();
       try {
         const data = await getJson(fetchFn, `${PLANNING_API}/entity.json?dataset=${ds}` +
-          `&geometry_entity=${ladEntity}&geometry_relation=intersects&limit=1&field=entity&field=dataset`, { retries: 1 });
+          `&geometry_entity=${ladEntity}&geometry_relation=intersects&limit=1&field=entity&field=dataset`,
+          { retries: 0, timeoutMs: Math.min(10000, config.requestTimeoutMs) });
         const ents = data.entities || [];
         if (data.__notFound) out[ds] = false;
         else if (typeof data.count === 'number' && data.count > 1e6) out[ds] = null; // filter ignored
@@ -629,7 +662,55 @@ function checkAgainstFeatures(lat, lon, fc, metres = 25) {
  *        with .metadata.downloaded), legacyA4 (hand-digitised 2022 polygons, last resort),
  *        boundary (FeatureCollection), nearMetres}
  */
-async function checkLocation(loc, deps) {
+async function checkLocation(loc, deps, { onProgress } = {}) {
+  const nearMetres = deps.nearMetres ?? 25;
+  const today = new Date().toISOString().slice(0, 10);
+  const live = {
+    at: null, plot: null, plotOnly: [], near: [], nearChecked: null, plotState: 'pending',
+    coverage: null, error: null, ladEntity: null, ladName: null,
+  };
+
+  // Stage 1: what's at the point. One quick request, shown straight away.
+  try {
+    live.at = dedupe((await pointQuery(deps.fetch, loc.lat, loc.lon)).filter((e) => isCurrent(e, today)));
+  } catch (e) {
+    live.error = e;
+  }
+  if (!live.at) return assemble(loc, deps, live, false);
+  const lad = live.at.find((e) => e.dataset === 'local-authority-district');
+  live.ladEntity = lad ? lad.entity : null;
+  live.ladName = lad ? lad.name : null;
+  if (onProgress) {
+    try { onProgress(assemble(loc, deps, live, true)); } catch (e) { /* display only */ }
+  }
+
+  // Stage 2: Land Registry plot, nearby records and data coverage, in parallel,
+  // each with a time limit so a slow reply can't hold up the result.
+  const limit = deps.stageTimeoutMs ?? 25000;
+  const [nearR, plotR, covR] = await Promise.allSettled([
+    nearMetres > 0 ? withTimeout(nearQuery(deps.fetch, loc.lat, loc.lon, nearMetres), limit) : Promise.resolve([]),
+    withTimeout(plotQuery(deps.fetch, live.at, loc.lat, loc.lon, today), limit),
+    live.ladEntity ? withTimeout(getCoverageCached(deps, live.ladEntity), limit) : Promise.resolve(null),
+  ]);
+  const atIds = new Set(live.at.map((e) => e.entity));
+  if (plotR.status === 'fulfilled') {
+    live.plot = plotR.value;
+    live.plotState = !plotR.value ? 'none' : plotR.value.entities === null ? 'failed' : 'ok';
+  } else {
+    live.plotState = 'failed';
+  }
+  const plotIds = new Set(((live.plot && live.plot.entities) || []).map((e) => e.entity));
+  live.plotOnly = live.plot && live.plot.entities ? live.plot.entities.filter((e) => !atIds.has(e.entity)) : [];
+  const nearAll = nearR.status === 'fulfilled' ? nearR.value : null;
+  live.nearChecked = nearAll !== null;
+  live.near = nearAll === null ? [] : dedupe(nearAll.filter((e) => isCurrent(e, today) && !atIds.has(e.entity)
+    && !plotIds.has(e.entity) && (!live.plot || e.entity !== live.plot.entity)));
+  live.coverage = covR.status === 'fulfilled' ? covR.value : null;
+  return assemble(loc, deps, live, false);
+}
+
+/** Build the result object from whatever has been fetched so far. */
+function assemble(loc, deps, live, pending) {
   const nearMetres = deps.nearMetres ?? 25;
   const warnings = [...(loc.warnings || [])];
   const result = {
@@ -638,9 +719,11 @@ async function checkLocation(loc, deps) {
     insideKingston: null,
     article4: { status: 'unknown', areas: [], directions: [], near: [], method: null },
     designations: [],
+    plotDesignations: [],
     nearby: [],
     warnings,
     dataSource: null,
+    pending,
   };
 
   if (deps.boundary) {
@@ -655,13 +738,10 @@ async function checkLocation(loc, deps) {
     }
   }
 
-  // 1. Authoritative live check
-  let live = null;
-  try {
-    live = await queryPlanningData(deps.fetch, loc.lat, loc.lon, { nearMetres });
-  } catch (e) {
-    warnings.push(`Live planning data could not be reached (${e.message}). Article 4 result uses the offline copy; other designations are not checked.`);
+  if (live.error) {
+    warnings.push(`Live planning data could not be reached (${live.error.message}). Article 4 result uses the offline copy; other designations are not checked.`);
   }
+  const hasLive = !!live.at;
 
   const toArea = (e, onPlot) => ({
     entity: e.entity, reference: e.reference, name: e.name,
@@ -673,7 +753,7 @@ async function checkLocation(loc, deps) {
     onPlot: !!onPlot,
   });
 
-  if (live) {
+  if (hasLive) {
     result.dataSource = 'planning.data.gov.uk (live)';
     const isA4 = (e) => e.dataset === 'article-4-direction-area';
     const a4Point = live.at.filter(isA4);
@@ -692,15 +772,13 @@ async function checkLocation(loc, deps) {
         entity: live.plot.entity, inspireId: live.plot.reference, geometry: live.plot.geometry,
         areaM2: Math.round(live.plot.areaM2), checked: live.plot.entities !== null, otherTitles: live.plot.otherTitles || 0,
       };
-      if (live.plot.entities === null) warnings.push('The Land Registry plot was found, but designations on it could not be checked. Results are for the point only.');
     }
-    if (!live.nearChecked) warnings.push(`Things within ${nearMetres} m could not be checked this time (Planning Data gave an unreliable answer). Results are for the point and plot only.`);
+    if (!pending && live.plotState === 'failed') warnings.push('The Land Registry plot could not be checked this time (Planning Data was slow or gave an unreliable answer). Results are for the point and nearby only.');
+    if (!pending && live.nearChecked === false) warnings.push(`Things within ${nearMetres} m could not be checked this time (Planning Data was slow or gave an unreliable answer). Results are for the point and plot only.`);
     const ward = live.at.find((e) => e.dataset === 'ward');
     result.ward = ward ? ward.name : null;
     result.authority = live.ladName;
-    if (live.ladEntity) {
-      result.coverage = await getCoverageCached(deps, live.ladEntity);
-    }
+    result.coverage = live.coverage;
   }
 
   // 2. Local geometry cross-check (distance to boundary, and fallback when offline)
@@ -712,7 +790,7 @@ async function checkLocation(loc, deps) {
   const usingSnapshot = localFc === deps.offlineA4;
   if (localFc) {
     const local = checkAgainstFeatures(loc.lat, loc.lon, localFc, nearMetres);
-    if (!live) {
+    if (!hasLive) {
       result.article4.method = usingLegacy ? 'offline-legacy' : usingSnapshot ? 'offline-snapshot' : 'offline';
       result.article4.status = local.inside.length ? 'inside' : 'outside';
       result.article4.areas = local.inside.map(({ feature }) => featureToArea(feature));
@@ -774,7 +852,7 @@ async function checkLocation(loc, deps) {
   result.article4.directions = [...byRef.values()];
   result.article4.restrictions = [...new Set(result.article4.areas.map((a) => a.pdRights).filter(Boolean))];
 
-  result.checklist = buildChecklist(result, !!live);
+  result.checklist = buildChecklist(result, hasLive, pending);
   return result;
 }
 
@@ -786,10 +864,18 @@ function displayName(d) {
 async function getCoverageCached(deps, ladEntity) {
   const cache = deps.coverageCache;
   if (cache && cache.has(ladEntity)) return cache.get(ladEntity);
+  // A store kept between visits (the page uses the browser's localStorage).
+  const stored = deps.coverageStore ? deps.coverageStore.get(ladEntity) : null;
+  if (stored) {
+    if (cache) cache.set(ladEntity, Promise.resolve(stored));
+    return stored;
+  }
   const p = fetchCoverage(deps.fetch, ladEntity).catch(() => null);
   if (cache) cache.set(ladEntity, p);
   const cov = await p;
-  if (cache && !cov) cache.delete(ladEntity);
+  const complete = cov && Object.values(cov).every((v) => v !== null);
+  if (!cov && cache) cache.delete(ladEntity);
+  if (complete && deps.coverageStore) deps.coverageStore.set(ladEntity, cov);
   return cov;
 }
 
@@ -802,8 +888,9 @@ async function getCoverageCached(deps, ladEntity) {
  *   not_published - nothing found because this area publishes no such data
  *   unknown   - nothing found, couldn't confirm whether the data is published
  *   unchecked - not checked (live data unavailable)
+ *   checking  - nothing at the point; plot / nearby / coverage still being checked
  */
-function buildChecklist(result, live) {
+function buildChecklist(result, live, pending = false) {
   const cov = result.coverage || {};
   const a4 = result.article4;
   return CHECKLIST.map((c) => {
@@ -825,6 +912,7 @@ function buildChecklist(result, live) {
     else if (items.some((i) => i.where === 'near')) status = 'near';
     else if (c.id === 'article4' && a4.status === 'outside') status = 'no';
     else if (!live) status = 'unchecked';
+    else if (pending) status = 'checking';
     else {
       const flags = c.datasets.map((d) => cov[d]);
       status = flags.some((f) => f === true) ? 'no' : flags.every((f) => f === false) ? 'not_published' : 'unknown';
@@ -994,6 +1082,9 @@ function resultToRow(r) {
 
 
 globalThis.A4Lookup = {
+  config,
+  getJson,
+  withTimeout,
   checklistCell,
   CHECKLIST,
   CHECKLIST_DATASETS,

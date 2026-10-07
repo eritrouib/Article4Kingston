@@ -4,12 +4,25 @@
 const {
   parseQuery, geocode, checkLocation, fetchArticle4Areas, fetchArticle4Directions,
   GROUPS, entityUrl, detectColumns, rowToQuery, resultToRow, latLonToBng, sleep,
-  PLANNING_API, KINGSTON_BBOX, linkDirection,
+  PLANNING_API, KINGSTON_BBOX, linkDirection, getJson,
 } = window.A4Lookup;
 
 const STATUS_TEXT = {
   yes: 'Yes', plot: 'Part of plot', near: 'Nearby', no: 'No',
-  not_published: 'Not published here', unknown: 'Not confirmed', unchecked: 'Not checked',
+  not_published: 'Not published here', unknown: 'Not confirmed', unchecked: 'Not checked', checking: 'Checking…',
+};
+
+// Which datasets each council publishes rarely changes, so remember it for a week.
+const coverageStore = {
+  get(lad) {
+    try {
+      const v = JSON.parse(localStorage.getItem(`a4-coverage-${lad}`) || 'null');
+      return v && Date.now() - v.saved < 7 * 864e5 ? v.coverage : null;
+    } catch { return null; }
+  },
+  set(lad, coverage) {
+    try { localStorage.setItem(`a4-coverage-${lad}`, JSON.stringify({ saved: Date.now(), coverage })); } catch { /* storage unavailable */ }
+  },
 };
 
 /* global L, proj4, Papa */
@@ -60,8 +73,7 @@ const basemaps = {
   }),
 };
 basemaps[DEFAULT_BASEMAP].addTo(map);
-// Show the layer list open on larger screens so the extra layers are easy to find.
-const layerControl = L.control.layers(basemaps, {}, { collapsed: window.matchMedia('(max-width: 800px)').matches }).addTo(map);
+const layerControl = L.control.layers(basemaps, {}, { collapsed: true }).addTo(map);
 
 // If the current background map fails to load (provider down, or blocked on
 // this network), switch once to another provider so the map isn't blank.
@@ -195,9 +207,11 @@ const KINGSTON_LAD_ENTITY = 8600304;
 const OVERLAYS = [
   { name: 'Conservation areas', dataset: 'conservation-area', style: { color: '#0f766e', weight: 1.5, fillColor: '#14b8a6', fillOpacity: 0.15 } },
   { name: 'Listed buildings', dataset: 'listed-building', point: '#be123c' },
-  { name: 'Listed building outlines', dataset: 'listed-building-outline', style: { color: '#be123c', weight: 1.5, fillColor: '#fb7185', fillOpacity: 0.3 }, minZoom: 15 },
-  { name: 'Tree preservation areas', dataset: 'tree-preservation-zone', style: { color: '#15803d', weight: 1, fillColor: '#22c55e', fillOpacity: 0.18 }, minZoom: 15 },
-  { name: 'Protected trees', dataset: 'tree', point: '#15803d', minZoom: 16 },
+  // These two are large (thousands of records), so they load ward by ward for
+  // the part of the map in view, once zoomed in to street level.
+  { name: 'Tree preservation areas', dataset: 'tree-preservation-zone', byWard: true, minZoom: 16,
+    style: { color: '#15803d', weight: 1, fillColor: '#22c55e', fillOpacity: 0.18 } },
+  { name: 'Protected trees', dataset: 'tree', byWard: true, minZoom: 16, point: '#15803d' },
   { name: 'Archaeological priority areas', dataset: 'archaeological-priority-area', style: { color: '#92400e', weight: 1.5, dashArray: '4 3', fillColor: '#d97706', fillOpacity: 0.08 } },
   { name: 'Scheduled monuments', dataset: 'scheduled-monument', style: { color: '#7f1d1d', weight: 2, fillColor: '#b91c1c', fillOpacity: 0.25 } },
   { name: 'Green belt', dataset: 'green-belt', style: { color: '#3f6212', weight: 1, fillColor: '#84cc16', fillOpacity: 0.15 } },
@@ -213,52 +227,124 @@ const OVERLAYS = [
   { name: 'Wards', dataset: 'ward', relation: 'within', style: { color: '#475569', weight: 1.5, dashArray: '2 4', fill: false }, labels: true },
 ];
 
+// Canvas drawing is much faster than SVG for hundreds of shapes.
+const overlayRenderer = L.canvas({ padding: 0.3 });
+
+function overlayLayer(o, fc) {
+  const label = o.name.replace(/s$/, '').replace(/areas$/, 'area');
+  return L.geoJSON(fc, {
+    style: o.style,
+    renderer: overlayRenderer,
+    pointToLayer: (f, latlng) => L.circleMarker(latlng, {
+      renderer: overlayRenderer, radius: 4, color: '#fff', weight: 1, fillColor: o.point || '#334155', fillOpacity: 1,
+    }),
+    onEachFeature: (f, l) => {
+      const props = { ...f.properties };
+      if (o.dataset === 'flood-risk-zone' && props['flood-risk-level']) props.name = `Flood zone ${props['flood-risk-level']}`;
+      l.bindPopup(popupFor(props, label));
+      if (o.labels && props.name) l.bindTooltip(esc(props.name), { sticky: true, className: 'ward-label' });
+    },
+  });
+}
+
+function flashStatus(text, kind = 'warn', ms = 4000) {
+  const el = $('#data-status');
+  const prev = { text: el.textContent, kind: el.dataset.kind };
+  setStatus(text, kind);
+  clearTimeout(flashStatus.timer);
+  flashStatus.timer = setTimeout(() => setStatus(prev.text, prev.kind), ms);
+}
+
 function setupOverlays() {
   for (const o of OVERLAYS) {
     const group = L.layerGroup();
-    let loaded = false;
-    group.on('add', async () => {
-      if (loaded) return;
-      loaded = true;
-      const prev = $('#data-status').textContent;
-      const kind = $('#data-status').dataset.kind;
-      setStatus(`Loading ${o.name.toLowerCase()}…`, 'loading');
-      try {
-        const fc = await fetchBoroughLayer(o.dataset, o.relation);
-        const label = o.name.replace(/s$/, '');
-        L.geoJSON(fc, {
-          style: o.style,
-          pointToLayer: (f, latlng) => L.circleMarker(latlng, { radius: 4, color: '#fff', weight: 1, fillColor: o.point || '#334155', fillOpacity: 1 }),
-          onEachFeature: (f, l) => {
-            const props = { ...f.properties };
-            if (o.dataset === 'flood-risk-zone' && props['flood-risk-level']) props.name = `Flood zone ${props['flood-risk-level']}`;
-            l.bindPopup(popupFor(props, label));
-            if (o.labels && props.name) l.bindTooltip(esc(props.name), { sticky: true, className: 'ward-label' });
-          },
-        }).addTo(group);
-        if (o.minZoom && map.getZoom() < o.minZoom && fc.features.length > 300) {
-          setStatus(`${o.name}: ${fc.features.length} shown — zoom in to see them clearly`, kind);
-          setTimeout(() => setStatus(prev, kind), 4000);
-        } else {
-          setStatus(prev, kind);
+    if (o.byWard) setupWardOverlay(o, group);
+    else {
+      let loaded = false;
+      group.on('add', async () => {
+        if (loaded) return;
+        loaded = true;
+        flashStatus(`Loading ${o.name.toLowerCase()}…`, 'loading', 60000);
+        try {
+          const fc = await fetchBoroughLayer(o.dataset, o.relation);
+          overlayLayer(o, fc).addTo(group);
+          flashStatus(`${o.name}: ${fc.features.length} shown`, 'ok', 2500);
+        } catch (e) {
+          loaded = false;
+          console.warn(o.dataset, e);
+          flashStatus(`Couldn't load ${o.name.toLowerCase()} from Planning Data`);
         }
-      } catch (e) {
-        loaded = false;
-        console.warn(o.dataset, e);
-        setStatus(`Couldn't load ${o.name.toLowerCase()} from Planning Data`, 'warn');
-        setTimeout(() => setStatus(prev, kind), 4000);
-      }
-    });
+      });
+    }
     layerControl.addOverlay(group, o.name);
   }
 }
 
-async function fetchBoroughLayer(dataset, relation = 'intersects') {
+// Ward lookups for the map view are cached by rounded position.
+const wardAtCache = new Map();
+async function wardsInView() {
+  const b = map.getBounds();
+  const pts = [map.getCenter(), b.getNorthWest(), b.getNorthEast(), b.getSouthWest(), b.getSouthEast()];
+  const ids = new Set();
+  await Promise.all(pts.map(async (p) => {
+    const key = `${p.lat.toFixed(3)},${p.lng.toFixed(3)}`;
+    if (!wardAtCache.has(key)) {
+      wardAtCache.set(key, loadJson(`${PLANNING_API}/entity.json?dataset=ward&latitude=${p.lat.toFixed(6)}` +
+        `&longitude=${p.lng.toFixed(6)}&field=entity&field=dataset&limit=5`)
+        .then((d) => (d.entities || []).filter((e) => e.dataset === 'ward').map((e) => e.entity))
+        .catch(() => { wardAtCache.delete(key); return []; }));
+    }
+    for (const id of await wardAtCache.get(key)) ids.add(id);
+  }));
+  return [...ids];
+}
+
+function setupWardOverlay(o, group) {
+  const loadedWards = new Map(); // ward entity -> 'loading' | 'done'
+  let active = false;
+  let hinted = false;
+  async function refresh() {
+    if (!active) return;
+    if (map.getZoom() < o.minZoom) {
+      if (!hinted) { flashStatus(`Zoom in to street level to see ${o.name.toLowerCase()}`, 'loading', 3500); hinted = true; }
+      return;
+    }
+    hinted = false;
+    const wards = (await wardsInView()).filter((w) => !loadedWards.has(w));
+    if (!wards.length || !active) return;
+    flashStatus(`Loading ${o.name.toLowerCase()}…`, 'loading', 60000);
+    let shown = 0, failed = 0;
+    await Promise.all(wards.map(async (w) => {
+      loadedWards.set(w, 'loading');
+      try {
+        const fc = await fetchAreaLayer(o.dataset, w, 'intersects', 6);
+        overlayLayer(o, fc).addTo(group);
+        loadedWards.set(w, 'done');
+        shown += fc.features.length;
+      } catch (e) {
+        loadedWards.delete(w);
+        failed++;
+        console.warn(o.dataset, w, e);
+      }
+    }));
+    if (failed) flashStatus(`Some ${o.name.toLowerCase()} couldn't be loaded. Move the map to try again.`);
+    else flashStatus(`${o.name}: ${shown} more shown`, 'ok', 2000);
+  }
+  group.on('add', () => { active = true; map.on('moveend', refresh); refresh(); });
+  group.on('remove', () => { active = false; map.off('moveend', refresh); });
+}
+
+function fetchBoroughLayer(dataset, relation = 'intersects') {
+  return fetchAreaLayer(dataset, KINGSTON_LAD_ENTITY, relation, 10);
+}
+
+/** Every current record of `dataset` related to an area entity (borough, ward…). */
+async function fetchAreaLayer(dataset, areaEntity, relation = 'intersects', maxPages = 10) {
   const today = new Date().toISOString().slice(0, 10);
   const features = [];
-  let url = `${PLANNING_API}/entity.geojson?dataset=${dataset}&geometry_entity=${KINGSTON_LAD_ENTITY}&geometry_relation=${relation}&limit=500`;
-  for (let page = 0; page < 30 && url; page++) {
-    const data = await loadJson(url);
+  let url = `${PLANNING_API}/entity.geojson?dataset=${dataset}&geometry_entity=${areaEntity}&geometry_relation=${relation}&limit=500`;
+  for (let page = 0; page < maxPages && url; page++) {
+    const data = await getJson(fetch, url, { timeoutMs: 30000 });
     const feats = data.features || [];
     // Guard against an ignored filter returning other datasets.
     features.push(...feats.filter((f) => f.geometry && (!f.properties.dataset || f.properties.dataset === dataset)
@@ -324,7 +410,14 @@ async function runSingle(text, chosenLoc) {
     if (loc.easting == null) Object.assign(loc, latLonToBng(proj4, loc.lat, loc.lon));
     if (token !== singleToken) return;
     placeMarker(loc, null);
-    const result = await checkLocation(loc, deps());
+    const result = await checkLocation(loc, deps(), {
+      onProgress: (partial) => {
+        if (token !== singleToken) return;
+        placeMarker(loc, partial);
+        out.innerHTML = renderResult(partial);
+        wireResult(out, partial);
+      },
+    });
     if (token !== singleToken) return;
     placeMarker(loc, result);
     out.innerHTML = renderResult(result);
@@ -340,7 +433,7 @@ function deps() {
   return {
     fetch, a4Areas: state.a4Areas, a4Directions: state.a4Directions,
     offlineA4: state.offlineA4, legacyA4: state.legacyA4, boundary: state.boundary, nearMetres: state.nearMetres,
-    coverageCache: state.coverageCache,
+    coverageCache: state.coverageCache, coverageStore,
   };
 }
 
@@ -408,6 +501,7 @@ function renderResult(r) {
       ${r.plot ? `<dt>Plot</dt><dd>Land Registry INSPIRE ID <a href="${entityUrl(r.plot.entity)}" target="_blank" rel="noopener">${esc(r.plot.inspireId)}</a> <span class="muted">· about ${esc(r.plot.areaM2.toLocaleString('en-GB'))} m²${r.plot.otherTitles ? ` · ${r.plot.otherTitles} other title${r.plot.otherTitles > 1 ? 's' : ''} here` : ''}</span></dd>` : ''}
     </dl>
     ${alts}
+    ${r.pending ? '<div class="pending"><span class="spinner"></span>Checking the Land Registry plot and nearby records…</div>' : ''}
     ${warnHtml}
     ${a4.status === 'inside' || a4.status === 'plot' || a4.near.length ? `<section><h3>Article 4</h3>${dirHtml}${rightsHtml}${areaHtml}${nearA4}</section>` : ''}
     ${checklistHtml}
@@ -415,8 +509,8 @@ function renderResult(r) {
     <footer class="result-foot">
       <span class="muted small">Checked ${new Date(r.checkedAt).toLocaleString('en-GB')}${r.dataSource ? ` · ${esc(r.dataSource)}` : ''}</span>
       <span class="actions">
-        <button class="btn btn-small" data-act="copy">Copy summary</button>
-        <button class="btn btn-small" data-act="print">Print</button>
+        <button class="btn btn-small" data-act="copy" ${r.pending ? 'disabled' : ''}>Copy summary</button>
+        <button class="btn btn-small" data-act="print" ${r.pending ? 'disabled' : ''}>Print</button>
       </span>
     </footer>
   </article>`;

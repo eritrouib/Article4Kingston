@@ -185,3 +185,8 @@ progress { flex: 1; min-width: 120px; height: 10px; }
 .leaflet-control-layers-expanded .leaflet-control-layers-base::before { content: "Background"; display: block; font-weight: 700; font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); margin-bottom: 2px; }
 .leaflet-control-layers-expanded .leaflet-control-layers-overlays::before { content: "Map layers"; display: block; font-weight: 700; font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); margin-bottom: 2px; }
 .ward-label { font: 600 12px var(--font); }
+
+/* Second stage still running */
+.pending { display: flex; align-items: center; gap: 8px; margin: 8px 14px; padding: 7px 10px; border-radius: 8px; background: #eef2ff; color: #3730a3; font-size: 0.86rem; }
+.chip-checking { background: #eef2ff; color: #4338ca; font-weight: 500; }
+.btn[disabled] { opacity: 0.5; cursor: default; }

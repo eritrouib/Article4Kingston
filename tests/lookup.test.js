@@ -4,6 +4,8 @@ import { readFileSync } from 'node:fs';
 import proj4 from 'proj4';
 import '../js/lookup.js'; // plain script: sets globalThis.A4Lookup
 
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
 const {
   parseQuery, normalisePostcode, geocode, checkLocation, checkAgainstFeatures,
   pointInGeometry, distanceToBoundary, bufferWkt, detectColumns, rowToQuery, resultToRow,
@@ -368,4 +370,59 @@ test('coverage is fetched once per borough and reused', async () => {
   await checkLocation({ ...OUTSIDE, label: 't', precision: 'exact' }, deps);
   assert.ok(first > 10);
   assert.equal(coverageCalls, first);
+});
+
+// ---------------------------------------------------------------------------
+// Speed: quick first answer, and a hanging service can't block the result
+// ---------------------------------------------------------------------------
+test('first answer is reported before the slower checks finish', async () => {
+  globalThis.A4Lookup.config.requestTimeoutMs = 150;
+  const title = { entity: 12000000001, dataset: 'title-boundary', reference: '111', 'end-date': '' };
+  const fetch = mockFetch([
+    [/latitude=/, { entities: [lad, a4Entity, caEntity, title] }],
+    [/./, () => new Promise(() => {})], // everything else never answers
+  ]);
+  const progress = [];
+  const t0 = Date.now();
+  const r = await checkLocation({ ...INSIDE, label: 't', precision: 'exact' }, {
+    fetch, legacyA4: legacy, boundary, stageTimeoutMs: 400, coverageCache: new Map(),
+  }, { onProgress: (p) => progress.push(p) });
+  const took = Date.now() - t0;
+  assert.ok(took < 2000, `finished in ${took} ms`);
+  assert.equal(progress.length, 1);
+  assert.equal(progress[0].pending, true);
+  assert.equal(progress[0].article4.status, 'inside');
+  assert.equal(progress[0].checklist.find((c) => c.id === 'green_belt').status, 'checking');
+  assert.equal(r.pending, false);
+  assert.equal(r.article4.status, 'inside');
+  assert.ok(r.warnings.some((w) => /Land Registry plot could not be checked/.test(w)));
+  assert.ok(r.warnings.some((w) => /could not be checked this time/.test(w)));
+  assert.equal(r.checklist.find((c) => c.id === 'conservation').status, 'yes');
+  assert.equal(r.checklist.find((c) => c.id === 'green_belt').status, 'unknown');
+  await sleep(1500); // let background requests time out
+  globalThis.A4Lookup.config.requestTimeoutMs = 15000;
+});
+
+test('getJson gives up after its time limit', async () => {
+  const { getJson } = globalThis.A4Lookup;
+  const t0 = Date.now();
+  await assert.rejects(getJson(() => new Promise(() => {}), 'http://x', { timeoutMs: 100 }), /timed out/);
+  assert.ok(Date.now() - t0 < 1000);
+});
+
+test('coverage is remembered between visits', async () => {
+  const saved = {};
+  const store = { get: (k) => saved[k] || null, set: (k, v) => { saved[k] = v; } };
+  let calls = 0;
+  const fetch = mockFetch([[/geometry_entity=8600304/, () => { calls++; return { entities: [], count: 0 }; }]]);
+  const deps = { fetch, legacyA4: legacy, boundary, coverageStore: store };
+  const pointFetch = mockFetch([
+    [/latitude=/, { entities: [lad] }], [/geometry=POLYGON/, { entities: [lad] }],
+    [/geometry_entity=8600304/, () => { calls++; return { entities: [], count: 0 }; }],
+  ]);
+  await checkLocation({ ...INSIDE, label: 't', precision: 'exact' }, { ...deps, fetch: pointFetch });
+  const first = calls;
+  assert.ok(saved[8600304], 'saved after first check');
+  await checkLocation({ ...INSIDE, label: 't', precision: 'exact' }, { ...deps, fetch: pointFetch });
+  assert.equal(calls, first, 'no coverage requests second time');
 });
