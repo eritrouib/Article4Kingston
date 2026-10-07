@@ -19,6 +19,7 @@ It also runs automatically on GitHub once a month (.github/workflows/update-data
 """
 import json
 import os
+import re
 import sys
 import urllib.parse
 import urllib.request
@@ -73,6 +74,30 @@ def fetch_all(path, params, key):
 def is_current(props, today):
     end = props.get("end-date") or ""
     return not end or end > today
+
+
+LINK_STOP = {"article", "direction", "directions", "for", "the", "and", "use", "uses", "area", "areas",
+             "a4d", "removes", "permitted", "development", "rights", "right", "change", "with", "from",
+             "this", "that", "site", "sites"}
+
+
+def link_words(text):
+    words = re.sub(r"[^a-z0-9]+", " ", str(text or "").lower()).split()
+    return {re.sub(r"s$", "", w) for w in words if len(w) > 2 and w not in LINK_STOP}
+
+
+def link_direction(props, directions):
+    """Which direction an area belongs to. Same rule as linkDirection() in js/lookup.js:
+    Kingston's "article-4-direction" field holds the area number, not A4D1/2/3, so
+    fall back to matching the area's description against the direction names."""
+    declared = str(props.get("article-4-direction") or "")
+    if declared in directions:
+        return declared
+    area_words = link_words(f"{props.get('notes', '')} {props.get('name', '')}")
+    scores = sorted(((len(link_words(d.get("name")) & area_words), ref) for ref, d in directions.items()), reverse=True)
+    if scores and scores[0][0] >= 2 and (len(scores) == 1 or scores[1][0] < scores[0][0]):
+        return scores[0][1]
+    return None
 
 
 def round_coords(obj, places=7):
@@ -147,9 +172,15 @@ def main():
     else:
         OUT_GEOJSON.write_text(json.dumps(fc, separators=(",", ":")), encoding="utf-8")
         print(f"Saved {len(kept)} areas across {len(directions)} directions to {OUT_GEOJSON.relative_to(ROOT)}")
+        counts = {}
+        for f in kept:
+            ref = link_direction(f["properties"], directions)
+            counts[ref] = counts.get(ref, 0) + 1
         for ref, d in sorted(directions.items()):
-            n = sum(1 for f in kept if f["properties"].get("article-4-direction") == ref)
+            n = counts.get(ref, 0)
             print(f"  {ref}: {d.get('name', '')} ({n} area{'' if n == 1 else 's'})")
+        if counts.get(None):
+            print(f"  Not linked to a direction: {counts[None]} area(s). Check their descriptions on planning.data.gov.uk.")
 
     write_bundle(fc)
 

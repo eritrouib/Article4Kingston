@@ -479,7 +479,8 @@ async function checkLocation(loc, deps) {
       entity: e.entity, reference: e.reference, name: e.name,
       direction: e['article-4-direction'] || null,
       startDate: e['start-date'] || null,
-      notes: e.notes || e['permitted-development-rights'] || '',
+      notes: e.notes || '',
+      pdRights: e['permitted-development-rights'] || '',
       organisation: e['organisation-entity'],
     }));
     result.designations = live.at.filter((e) => e.dataset !== 'article-4-direction-area').map(simplify);
@@ -540,16 +541,52 @@ async function checkLocation(loc, deps) {
 
   // Directions (legal instrument) details
   const dirs = deps.a4Directions || {};
-  const refs = [...new Set(result.article4.areas.map((a) => a.direction).filter(Boolean))];
-  result.article4.directions = refs.map((r) => {
-    const d = dirs[r];
-    return d
-      ? { reference: r, name: d.name, startDate: d['start-date'] || null, description: d.description || d.notes || '',
-          documentUrl: d['document-url'] || d['documentation-url'] || null, entity: d.entity }
-      : { reference: r, name: r };
-  });
+  const byRef = new Map();
+  for (const a of result.article4.areas) {
+    const link = linkDirection(a, dirs);
+    a.directionRef = link.ref;
+    a.directionLinkedBy = link.how;
+    const key = link.ref || `unlinked:${a.notes || a.name}`;
+    if (!byRef.has(key)) {
+      const d = link.ref ? dirs[link.ref] : null;
+      byRef.set(key, d
+        ? { reference: link.ref, name: d.name, startDate: d['start-date'] || null, description: d.description || d.notes || '',
+            documentUrl: d['document-url'] || d['documentation-url'] || null, entity: d.entity, linkedBy: link.how }
+        : { reference: null, name: a.notes || 'Article 4 direction (not identified in the published data)', linkedBy: null });
+    }
+  }
+  result.article4.directions = [...byRef.values()];
+  result.article4.restrictions = [...new Set(result.article4.areas.map((a) => a.pdRights).filter(Boolean))];
 
   return result;
+}
+
+// Kingston's published areas don't reliably say which direction they belong to:
+// their "article-4-direction" field repeats the area's own reference ("1".."114")
+// instead of A4D1/A4D2/A4D3. Use that field when it matches a real direction,
+// otherwise match the area's description against the direction names.
+const LINK_STOP = new Set(['article', 'direction', 'directions', 'for', 'the', 'and', 'use', 'uses', 'area', 'areas',
+  'a4d', 'removes', 'permitted', 'development', 'rights', 'right', 'change', 'with', 'from', 'this', 'that', 'site', 'sites']);
+function linkWords(text) {
+  return new Set(String(text || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').split(' ')
+    .filter((w) => w.length > 2 && !LINK_STOP.has(w)).map((w) => w.replace(/s$/, '')));
+}
+
+function linkDirection(area, directions) {
+  const declared = area.direction != null ? String(area.direction) : '';
+  if (declared && directions[declared]) return { ref: declared, how: 'published' };
+  const areaWords = linkWords(`${area.notes || ''} ${area.name || ''}`);
+  let best = null;
+  let bestScore = 0;
+  let tie = false;
+  for (const [ref, d] of Object.entries(directions || {})) {
+    if (d['end-date'] && d['end-date'] <= new Date().toISOString().slice(0, 10)) continue;
+    const dirWords = linkWords(d.name);
+    let score = 0;
+    for (const w of dirWords) if (areaWords.has(w)) score++;
+    if (score > bestScore) { best = ref; bestScore = score; tie = false; } else if (score && score === bestScore) tie = true;
+  }
+  return best && bestScore >= 2 && !tie ? { ref: best, how: 'matched' } : { ref: null, how: null };
 }
 
 function featureToArea(f) {
@@ -557,7 +594,7 @@ function featureToArea(f) {
   return {
     entity: p.entity ?? null, reference: p.reference ?? null, name: p.name ?? 'Article 4 area',
     direction: p['article-4-direction'] || null, startDate: p['start-date'] || null,
-    notes: p.notes || p['permitted-development-rights'] || '',
+    notes: p.notes || '', pdRights: p['permitted-development-rights'] || '',
   };
 }
 
@@ -648,7 +685,8 @@ function resultToRow(r) {
     article4: a4.status === 'inside' ? 'Y' : a4.status === 'outside' ? 'N' : '',
     article4_borderline: yn(!!a4.borderline),
     article4_areas: a4.areas.map((a) => a.name).join('; '),
-    article4_directions: a4.directions.map((d) => d.name && d.name !== d.reference ? `${d.reference} ${d.name}` : d.reference).join('; '),
+    article4_directions: a4.directions.map((d) => (d.reference ? `${d.reference} ${d.name}` : d.name)).join('; '),
+    article4_rights_removed: (a4.restrictions || []).join('; '),
     article4_check_method: a4.method || '',
     conservation_area: named('conservation-area'),
     listed_building_at_point: named('listed-building'),
@@ -670,6 +708,7 @@ function resultToRow(r) {
 
 
 globalThis.A4Lookup = {
+  linkDirection,
   PLANNING_API,
   POSTCODES_API,
   NOMINATIM_API,

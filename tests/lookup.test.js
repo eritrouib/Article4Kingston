@@ -207,3 +207,42 @@ test('offline fallback prefers the saved official copy over the 2022 polygons', 
   assert.ok(r.warnings.some((w) => /saved in this tool on 2026-10-01/.test(w)));
   assert.ok(!r.warnings.some((w) => /Seething Wells/.test(w)), 'no legacy warning');
 });
+
+// Real records from planning.data.gov.uk (Oct 2026): the areas' "article-4-direction"
+// field holds the area's own number, so links must come from the descriptions.
+const KINGSTON_DIRECTIONS = {
+  A4D1: { entity: 1, reference: 'A4D1', name: 'Seething Wells Filter Bed', 'start-date': '2021-04-14' },
+  A4D2: { entity: 2, reference: 'A4D2', name: 'Commercial, business and service use to residential use', 'start-date': '2022-07-31' },
+  A4D3: { entity: 3, reference: 'A4D3', name: 'North Lodge and South Lodge', 'start-date': '2023-08-29' },
+};
+const KINGSTON_AREAS = [
+  { name: 'Canbury Park LSIS A4D area', direction: '1', notes: 'Article 4 Direction for commercial, business and service use to residential use', want: 'A4D2' },
+  { name: 'Seething Wells Filter Beds', direction: '112', notes: 'Article 4 Direction at Seething Wells Filter Beds', want: 'A4D1' },
+  { name: 'North Lodge', direction: '113', notes: 'Article 4 Direction for North Lodge and South Lodge', want: 'A4D3' },
+  { name: 'South Lodge', direction: '114', notes: 'Article 4 Direction for North Lodge and South Lodge', want: 'A4D3' },
+];
+
+test('areas are linked to the right direction from their descriptions', () => {
+  const { linkDirection } = globalThis.A4Lookup;
+  for (const a of KINGSTON_AREAS) {
+    assert.deepEqual(linkDirection(a, KINGSTON_DIRECTIONS), { ref: a.want, how: 'matched' }, a.name);
+  }
+  assert.deepEqual(linkDirection({ direction: 'A4D2' }, KINGSTON_DIRECTIONS), { ref: 'A4D2', how: 'published' });
+  assert.deepEqual(linkDirection({ direction: '7', notes: 'Something unrelated' }, KINGSTON_DIRECTIONS), { ref: null, how: null });
+});
+
+test('result names the direction and lists the rights removed', async () => {
+  const seething = {
+    entity: 7010010435, dataset: 'article-4-direction-area', name: 'Seething Wells Filter Beds', reference: '112',
+    'article-4-direction': '112', notes: 'Article 4 Direction at Seething Wells Filter Beds', 'end-date': '',
+    'permitted-development-rights': 'Removes permitted development rights to erect fencing, gates and other means of enclosure on the site.',
+  };
+  const fetch = mockFetch([[/geometry=POLYGON/, { entities: [], links: {} }], [/latitude=/, { entities: [seething], links: {} }]]);
+  const r = await checkLocation({ ...INSIDE, label: 't', precision: 'exact' }, { fetch, a4Directions: KINGSTON_DIRECTIONS, legacyA4: legacy, boundary });
+  assert.equal(r.article4.directions[0].reference, 'A4D1');
+  assert.equal(r.article4.directions[0].name, 'Seething Wells Filter Bed');
+  assert.match(r.article4.restrictions[0], /fencing, gates/);
+  const row = resultToRow(r);
+  assert.equal(row.article4_directions, 'A4D1 Seething Wells Filter Bed');
+  assert.match(row.article4_rights_removed, /fencing/);
+});

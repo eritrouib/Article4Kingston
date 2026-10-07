@@ -149,3 +149,8 @@ progress { flex: 1; min-width: 120px; height: 10px; }
 
 /* Grey version of the OpenStreetMap background, so the coloured overlays stand out */
 .tiles-grey { filter: grayscale(1) contrast(0.92) brightness(1.06); }
+
+/* "Rights removed" panel in an Article 4 result */
+.rights { margin: 8px 0; padding: 8px 10px; border-left: 3px solid var(--in-bar); background: #fffbeb; border-radius: 0 6px 6px 0; }
+.rights-label { display: block; font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); margin-bottom: 2px; }
+.rights p { margin: 2px 0; font-size: 0.9rem; }

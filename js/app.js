@@ -4,7 +4,7 @@
 const {
   parseQuery, geocode, checkLocation, fetchArticle4Areas, fetchArticle4Directions,
   GROUPS, entityUrl, detectColumns, rowToQuery, resultToRow, latLonToBng, sleep,
-  PLANNING_API, KINGSTON_BBOX,
+  PLANNING_API, KINGSTON_BBOX, linkDirection,
 } = window.A4Lookup;
 
 /* global L, proj4, Papa */
@@ -92,15 +92,20 @@ function popupFor(props, kind) {
   const p = props || {};
   const name = esc(p.name || p.reference || kind);
   const parts = [`<strong>${name}</strong>`, `<span class="muted">${esc(kind)}</span>`];
-  if (p['article-4-direction']) parts.push(`Direction: ${esc(directionLabel(p['article-4-direction']))}`);
+  if (p['article-4-direction'] || p.notes) {
+    const label = directionLabel({ direction: p['article-4-direction'], notes: p.notes, name: p.name });
+    if (label) parts.push(`Direction: ${esc(label)}`);
+  }
+  if (p['permitted-development-rights']) parts.push(`<span class="small">${esc(p['permitted-development-rights'])}</span>`);
   if (p['start-date']) parts.push(`From ${esc(p['start-date'])}`);
   if (p.entity) parts.push(`<a href="${entityUrl(p.entity)}" target="_blank" rel="noopener">View record</a>`);
   return parts.join('<br>');
 }
 
-function directionLabel(ref) {
-  const d = state.a4Directions[ref];
-  return d ? `${ref} – ${d.name}` : ref;
+function directionLabel(area) {
+  const { ref } = linkDirection(area, state.a4Directions);
+  if (ref) return `${ref} – ${state.a4Directions[ref].name}`;
+  return area.notes || '';
 }
 
 // Bundled data (js/data.js) is used when present, so the page works from file://.
@@ -282,12 +287,15 @@ function renderResult(r) {
 
   const dirHtml = a4.directions.length ? `
     <ul class="dir-list">${a4.directions.map((d) => `
-      <li><strong>${esc(d.reference)}</strong> ${esc(d.name && d.name !== d.reference ? d.name : '')}
+      <li>${d.reference ? `<strong>${esc(d.reference)}</strong> ` : ''}${esc(d.name)}
         ${d.startDate ? `<span class="muted">· in force from ${esc(d.startDate)}</span>` : ''}
         ${d.entity ? `· <a href="${entityUrl(d.entity)}" target="_blank" rel="noopener">record</a>` : ''}
         ${d.documentUrl ? `· <a href="${esc(d.documentUrl)}" target="_blank" rel="noopener">direction document</a>` : ''}
         ${d.description ? `<div class="muted small">${esc(d.description)}</div>` : ''}
       </li>`).join('')}</ul>` : '';
+  const rightsHtml = (a4.restrictions || []).length ? `
+    <div class="rights"><span class="rights-label">Rights removed</span>
+      ${a4.restrictions.map((t) => `<p>${esc(t)}</p>`).join('')}</div>` : '';
 
   const areaHtml = a4.areas.length ? `<p class="small">Area${a4.areas.length > 1 ? 's' : ''}: ${a4.areas.map((a) =>
     `${a.entity ? `<a href="${entityUrl(a.entity)}" target="_blank" rel="noopener">${esc(a.name)}</a>` : esc(a.name)}${a.distanceToEdge != null ? ` <span class="muted">(${Math.round(a.distanceToEdge)} m from edge)</span>` : ''}`).join(', ')}</p>` : '';
@@ -330,7 +338,7 @@ function renderResult(r) {
     </dl>
     ${alts}
     ${warnHtml}
-    ${a4.status === 'inside' || a4.near.length ? `<section><h3>Article 4</h3>${dirHtml}${areaHtml}${nearA4}</section>` : ''}
+    ${a4.status === 'inside' || a4.near.length ? `<section><h3>Article 4</h3>${dirHtml}${rightsHtml}${areaHtml}${nearA4}</section>` : ''}
     <section><h3>Other designations at this point</h3>${desigHtml}${noneFound}${notChecked}${adminHtml}</section>
     ${nearbyHtml}
     <footer class="result-foot">
@@ -377,6 +385,7 @@ function summaryText(r) {
     `Article 4: ${row.article4 === 'Y' ? 'YES' : row.article4 === 'N' ? 'No' : 'Unknown'}${row.article4_borderline === 'Y' ? ' (borderline – verify)' : ''}`,
   ];
   if (row.article4_directions) lines.push(`  Direction(s): ${row.article4_directions}`);
+  if (row.article4_rights_removed) lines.push(`  Rights removed: ${row.article4_rights_removed}`);
   if (row.article4_areas) lines.push(`  Area(s): ${row.article4_areas}`);
   const add = (k, v) => v && lines.push(`${k}: ${v}`);
   add('Conservation area', row.conservation_area);
