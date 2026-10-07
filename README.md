@@ -17,7 +17,7 @@ A web tool to help Local Land Charges (LLC) officers at the Royal Borough of Kin
   - `Latitude`/`Longitude`
   - `Address` (or `Address1`, `Address2`, `Town`…) plus `Postcode`
   - `Postcode` alone (checks the postcode centre only)
-- **Map layers** you can switch on: conservation areas, listed buildings and outlines, tree preservation areas and protected trees, archaeological priority areas, scheduled monuments, green belt and brownfield land.
+- **Map layers** you can switch on: conservation areas, listed buildings and outlines, tree preservation areas and protected trees, archaeological priority areas, scheduled monuments, green belt, brownfield land, flood zones 2 and 3, registered parks and gardens, SSSIs, local nature reserves, ancient woodland and wards.
 
 ### Checklist answers
 

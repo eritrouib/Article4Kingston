@@ -60,7 +60,8 @@ const basemaps = {
   }),
 };
 basemaps[DEFAULT_BASEMAP].addTo(map);
-const layerControl = L.control.layers(basemaps, {}, { collapsed: true }).addTo(map);
+// Show the layer list open on larger screens so the extra layers are easy to find.
+const layerControl = L.control.layers(basemaps, {}, { collapsed: window.matchMedia('(max-width: 800px)').matches }).addTo(map);
 
 // If the current background map fails to load (provider down, or blocked on
 // this network), switch once to another provider so the map isn't blank.
@@ -201,6 +202,15 @@ const OVERLAYS = [
   { name: 'Scheduled monuments', dataset: 'scheduled-monument', style: { color: '#7f1d1d', weight: 2, fillColor: '#b91c1c', fillOpacity: 0.25 } },
   { name: 'Green belt', dataset: 'green-belt', style: { color: '#3f6212', weight: 1, fillColor: '#84cc16', fillOpacity: 0.15 } },
   { name: 'Brownfield land', dataset: 'brownfield-land', style: { color: '#57534e', weight: 1.5, fillColor: '#a8a29e', fillOpacity: 0.3 } },
+  { name: 'Flood zones 2 and 3', dataset: 'flood-risk-zone',
+    style: (f) => (String((f && f.properties && f.properties['flood-risk-level']) || '') === '3'
+      ? { color: '#1d4ed8', weight: 1, fillColor: '#2563eb', fillOpacity: 0.35 }
+      : { color: '#60a5fa', weight: 1, fillColor: '#93c5fd', fillOpacity: 0.3 }) },
+  { name: 'Registered parks and gardens', dataset: 'park-and-garden', style: { color: '#4d7c0f', weight: 2, dashArray: '5 3', fillColor: '#a3e635', fillOpacity: 0.15 } },
+  { name: 'Sites of special scientific interest', dataset: 'site-of-special-scientific-interest', style: { color: '#065f46', weight: 2, fillColor: '#10b981', fillOpacity: 0.2 } },
+  { name: 'Local nature reserves', dataset: 'local-nature-reserve', style: { color: '#166534', weight: 1.5, fillColor: '#4ade80', fillOpacity: 0.2 } },
+  { name: 'Ancient woodland', dataset: 'ancient-woodland', style: { color: '#14532d', weight: 1, fillColor: '#15803d', fillOpacity: 0.35 } },
+  { name: 'Wards', dataset: 'ward', relation: 'within', style: { color: '#475569', weight: 1.5, dashArray: '2 4', fill: false }, labels: true },
 ];
 
 function setupOverlays() {
@@ -214,12 +224,17 @@ function setupOverlays() {
       const kind = $('#data-status').dataset.kind;
       setStatus(`Loading ${o.name.toLowerCase()}…`, 'loading');
       try {
-        const fc = await fetchBoroughLayer(o.dataset);
+        const fc = await fetchBoroughLayer(o.dataset, o.relation);
         const label = o.name.replace(/s$/, '');
         L.geoJSON(fc, {
           style: o.style,
           pointToLayer: (f, latlng) => L.circleMarker(latlng, { radius: 4, color: '#fff', weight: 1, fillColor: o.point || '#334155', fillOpacity: 1 }),
-          onEachFeature: (f, l) => l.bindPopup(popupFor(f.properties, label)),
+          onEachFeature: (f, l) => {
+            const props = { ...f.properties };
+            if (o.dataset === 'flood-risk-zone' && props['flood-risk-level']) props.name = `Flood zone ${props['flood-risk-level']}`;
+            l.bindPopup(popupFor(props, label));
+            if (o.labels && props.name) l.bindTooltip(esc(props.name), { sticky: true, className: 'ward-label' });
+          },
         }).addTo(group);
         if (o.minZoom && map.getZoom() < o.minZoom && fc.features.length > 300) {
           setStatus(`${o.name}: ${fc.features.length} shown — zoom in to see them clearly`, kind);
@@ -238,10 +253,10 @@ function setupOverlays() {
   }
 }
 
-async function fetchBoroughLayer(dataset) {
+async function fetchBoroughLayer(dataset, relation = 'intersects') {
   const today = new Date().toISOString().slice(0, 10);
   const features = [];
-  let url = `${PLANNING_API}/entity.geojson?dataset=${dataset}&geometry_entity=${KINGSTON_LAD_ENTITY}&geometry_relation=intersects&limit=500`;
+  let url = `${PLANNING_API}/entity.geojson?dataset=${dataset}&geometry_entity=${KINGSTON_LAD_ENTITY}&geometry_relation=${relation}&limit=500`;
   for (let page = 0; page < 30 && url; page++) {
     const data = await loadJson(url);
     const feats = data.features || [];
