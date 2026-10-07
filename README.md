@@ -90,4 +90,7 @@ The scripts are plain (non-module) JavaScript so the page also works when opened
 
 ## Licence & attribution
 
+Created by **@ET**.
+
+
 Contains public sector information licensed under the Open Government Licence v3.0. Contains OS data © Crown copyright and database right. Map data © OpenStreetMap contributors; imagery © Esri.

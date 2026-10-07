@@ -172,15 +172,15 @@ def main():
     else:
         OUT_GEOJSON.write_text(json.dumps(fc, separators=(",", ":")), encoding="utf-8")
         print(f"Saved {len(kept)} areas across {len(directions)} directions to {OUT_GEOJSON.relative_to(ROOT)}")
-        counts = {}
-        for f in kept:
-            ref = link_direction(f["properties"], directions)
-            counts[ref] = counts.get(ref, 0) + 1
-        for ref, d in sorted(directions.items()):
-            n = counts.get(ref, 0)
-            print(f"  {ref}: {d.get('name', '')} ({n} area{'' if n == 1 else 's'})")
-        if counts.get(None):
-            print(f"  Not linked to a direction: {counts[None]} area(s). Check their descriptions on planning.data.gov.uk.")
+    counts = {}
+    for f in kept:
+        ref = link_direction(f["properties"], directions)
+        counts[ref] = counts.get(ref, 0) + 1
+    for ref, d in sorted(directions.items()):
+        n = counts.get(ref, 0)
+        print(f"  {ref}: {d.get('name', '')} ({n} area{'' if n == 1 else 's'})")
+    if counts.get(None):
+        print(f"  Not linked to a direction: {counts[None]} area(s). Check their descriptions on planning.data.gov.uk.")
 
     write_bundle(fc)
 
