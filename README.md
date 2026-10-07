@@ -1,4 +1,4 @@
-# Article 4 & Constraints Checker — Kingston upon Thames
+# Article 4 & Constraints Checker - Kingston upon Thames
 
 A web tool to help Local Land Charges (LLC) officers at the Royal Borough of Kingston upon Thames check whether a property falls within an **Article 4 direction area**, and which other planning designations apply to it.
 
