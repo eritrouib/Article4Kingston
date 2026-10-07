@@ -7,6 +7,11 @@ const {
   PLANNING_API, KINGSTON_BBOX, linkDirection,
 } = window.A4Lookup;
 
+const STATUS_TEXT = {
+  yes: 'Yes', plot: 'Part of plot', near: 'Nearby', no: 'No',
+  not_published: 'Not published here', unknown: 'Not confirmed', unchecked: 'Not checked',
+};
+
 /* global L, proj4, Papa */
 
 const state = {
@@ -16,6 +21,7 @@ const state = {
   a4Areas: null,
   a4Directions: {},
   nearMetres: 25,
+  coverageCache: new Map(),
   layers: {},
   marker: null,
   batch: { rows: [], cols: null, headers: [], results: [], cancelled: false, running: false },
@@ -86,6 +92,7 @@ const styles = {
   ca: { color: '#0f766e', weight: 1.5, fillColor: '#14b8a6', fillOpacity: 0.15 },
   boundary: { color: '#1e3a5f', weight: 2.5, fill: false, dashArray: '2 6', lineCap: 'round' },
   highlight: { color: '#dc2626', weight: 4, fillOpacity: 0.3 },
+  plot: { color: '#7c3aed', weight: 3, fillColor: '#8b5cf6', fillOpacity: 0.12, dashArray: '6 4' },
 };
 
 function popupFor(props, kind) {
@@ -176,25 +183,75 @@ async function init() {
     setStatus('Planning Data unreachable — Article 4 can\'t be checked', 'warn');
   }
 
-  loadConservationAreas();
+  setupOverlays();
   bootFromUrl();
 }
 
-async function loadConservationAreas() {
-  const [w, s, e, n] = KINGSTON_BBOX;
-  const wkt = `POLYGON((${w} ${s},${e} ${s},${e} ${n},${w} ${n},${w} ${s}))`;
-  const url = `${PLANNING_API}/entity.geojson?dataset=conservation-area&geometry_relation=intersects&geometry=${encodeURIComponent(wkt)}&limit=500`;
-  try {
-    const fc = await loadJson(url);
-    const today = new Date().toISOString().slice(0, 10);
-    fc.features = (fc.features || []).filter((f) => f.geometry && !(f.properties['end-date'] && f.properties['end-date'] <= today));
-    if (!fc.features.length) return;
-    state.layers.ca = L.geoJSON(fc, {
-      style: styles.ca,
-      onEachFeature: (f, l) => l.bindPopup(popupFor(f.properties, 'Conservation area')),
+// Optional map layers, loaded from Planning Data the first time they're switched on.
+// They ask for "everything intersecting the borough" by its entity ID, so no shape
+// has to be sent in the URL.
+const KINGSTON_LAD_ENTITY = 8600304;
+const OVERLAYS = [
+  { name: 'Conservation areas', dataset: 'conservation-area', style: { color: '#0f766e', weight: 1.5, fillColor: '#14b8a6', fillOpacity: 0.15 } },
+  { name: 'Listed buildings', dataset: 'listed-building', point: '#be123c' },
+  { name: 'Listed building outlines', dataset: 'listed-building-outline', style: { color: '#be123c', weight: 1.5, fillColor: '#fb7185', fillOpacity: 0.3 }, minZoom: 15 },
+  { name: 'Tree preservation areas', dataset: 'tree-preservation-zone', style: { color: '#15803d', weight: 1, fillColor: '#22c55e', fillOpacity: 0.18 }, minZoom: 15 },
+  { name: 'Protected trees', dataset: 'tree', point: '#15803d', minZoom: 16 },
+  { name: 'Archaeological priority areas', dataset: 'archaeological-priority-area', style: { color: '#92400e', weight: 1.5, dashArray: '4 3', fillColor: '#d97706', fillOpacity: 0.08 } },
+  { name: 'Scheduled monuments', dataset: 'scheduled-monument', style: { color: '#7f1d1d', weight: 2, fillColor: '#b91c1c', fillOpacity: 0.25 } },
+  { name: 'Green belt', dataset: 'green-belt', style: { color: '#3f6212', weight: 1, fillColor: '#84cc16', fillOpacity: 0.15 } },
+  { name: 'Brownfield land', dataset: 'brownfield-land', style: { color: '#57534e', weight: 1.5, fillColor: '#a8a29e', fillOpacity: 0.3 } },
+];
+
+function setupOverlays() {
+  for (const o of OVERLAYS) {
+    const group = L.layerGroup();
+    let loaded = false;
+    group.on('add', async () => {
+      if (loaded) return;
+      loaded = true;
+      const prev = $('#data-status').textContent;
+      const kind = $('#data-status').dataset.kind;
+      setStatus(`Loading ${o.name.toLowerCase()}…`, 'loading');
+      try {
+        const fc = await fetchBoroughLayer(o.dataset);
+        const label = o.name.replace(/s$/, '');
+        L.geoJSON(fc, {
+          style: o.style,
+          pointToLayer: (f, latlng) => L.circleMarker(latlng, { radius: 4, color: '#fff', weight: 1, fillColor: o.point || '#334155', fillOpacity: 1 }),
+          onEachFeature: (f, l) => l.bindPopup(popupFor(f.properties, label)),
+        }).addTo(group);
+        if (o.minZoom && map.getZoom() < o.minZoom && fc.features.length > 300) {
+          setStatus(`${o.name}: ${fc.features.length} shown — zoom in to see them clearly`, kind);
+          setTimeout(() => setStatus(prev, kind), 4000);
+        } else {
+          setStatus(prev, kind);
+        }
+      } catch (e) {
+        loaded = false;
+        console.warn(o.dataset, e);
+        setStatus(`Couldn't load ${o.name.toLowerCase()} from Planning Data`, 'warn');
+        setTimeout(() => setStatus(prev, kind), 4000);
+      }
     });
-    layerControl.addOverlay(state.layers.ca, 'Conservation areas');
-  } catch (e) { console.warn('conservation areas', e); }
+    layerControl.addOverlay(group, o.name);
+  }
+}
+
+async function fetchBoroughLayer(dataset) {
+  const today = new Date().toISOString().slice(0, 10);
+  const features = [];
+  let url = `${PLANNING_API}/entity.geojson?dataset=${dataset}&geometry_entity=${KINGSTON_LAD_ENTITY}&geometry_relation=intersects&limit=500`;
+  for (let page = 0; page < 30 && url; page++) {
+    const data = await loadJson(url);
+    const feats = data.features || [];
+    // Guard against an ignored filter returning other datasets.
+    features.push(...feats.filter((f) => f.geometry && (!f.properties.dataset || f.properties.dataset === dataset)
+      && !(f.properties['end-date'] && f.properties['end-date'] <= today)));
+    const next = data.links && data.links.next;
+    url = next && feats.length ? (next.startsWith('http') ? next : PLANNING_API + next) : null;
+  }
+  return { type: 'FeatureCollection', features };
 }
 
 function setStatus(text, kind) {
@@ -213,8 +270,12 @@ map.on('click', (ev) => {
 
 function placeMarker(loc, result) {
   if (state.marker) state.marker.remove();
+  if (state.plotLayer) { state.plotLayer.remove(); state.plotLayer = null; }
   const status = result ? result.article4.status : 'unknown';
   const color = result && result.article4.borderline ? '#c2410c' : status === 'inside' ? '#b45309' : status === 'outside' ? '#15803d' : '#475569';
+  if (result && result.plot && result.plot.geometry) {
+    state.plotLayer = L.geoJSON(result.plot.geometry, { style: styles.plot, interactive: false }).addTo(map);
+  }
   state.marker = L.circleMarker([loc.lat, loc.lon], {
     radius: 9, color: '#fff', weight: 3, fillColor: color, fillOpacity: 1,
   }).addTo(map);
@@ -223,7 +284,11 @@ function placeMarker(loc, result) {
     radius: state.nearMetres, color, weight: 1, dashArray: '3 3', fill: false, interactive: false,
   }).addTo(map);
   state.marker.bindTooltip(esc(loc.label));
-  map.setView([loc.lat, loc.lon], Math.max(map.getZoom(), 17));
+  if (state.plotLayer) {
+    map.fitBounds(state.plotLayer.getBounds().pad(0.6), { maxZoom: 19 });
+  } else {
+    map.setView([loc.lat, loc.lon], Math.max(map.getZoom(), 17));
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -260,6 +325,7 @@ function deps() {
   return {
     fetch, a4Areas: state.a4Areas, a4Directions: state.a4Directions,
     offlineA4: state.offlineA4, legacyA4: state.legacyA4, boundary: state.boundary, nearMetres: state.nearMetres,
+    coverageCache: state.coverageCache,
   };
 }
 
@@ -267,6 +333,9 @@ function verdict(r) {
   const a4 = r.article4;
   if (a4.status === 'inside') {
     return { cls: a4.borderline ? 'v-border' : 'v-in', title: a4.borderline ? 'Inside an Article 4 area — near the boundary' : 'Inside an Article 4 direction area' };
+  }
+  if (a4.status === 'plot') {
+    return { cls: 'v-border', title: 'Part of the plot is in an Article 4 area' };
   }
   if (a4.status === 'outside') {
     return { cls: a4.borderline ? 'v-border' : 'v-out', title: a4.borderline ? 'Outside, but an Article 4 boundary is very close' : 'Not in an Article 4 direction area' };
@@ -298,26 +367,12 @@ function renderResult(r) {
       ${a4.restrictions.map((t) => `<p>${esc(t)}</p>`).join('')}</div>` : '';
 
   const areaHtml = a4.areas.length ? `<p class="small">Area${a4.areas.length > 1 ? 's' : ''}: ${a4.areas.map((a) =>
-    `${a.entity ? `<a href="${entityUrl(a.entity)}" target="_blank" rel="noopener">${esc(a.name)}</a>` : esc(a.name)}${a.distanceToEdge != null ? ` <span class="muted">(${Math.round(a.distanceToEdge)} m from edge)</span>` : ''}`).join(', ')}</p>` : '';
+    `${a.entity ? `<a href="${entityUrl(a.entity)}" target="_blank" rel="noopener">${esc(a.name)}</a>` : esc(a.name)}${a.onPlot ? ' <span class="where where-plot">part of plot</span>' : ''}${a.distanceToEdge != null ? ` <span class="muted">(${Math.round(a.distanceToEdge)} m from edge)</span>` : ''}`).join(', ')}</p>` : '';
   const nearA4 = a4.status === 'outside' && a4.near.length ? `<p class="small">Nearby: ${a4.near.map((a) =>
     `${esc(a.name)}${a.distance != null ? ` (${Math.round(a.distance)} m)` : ''}`).join(', ')}</p>` : '';
 
-  // Designations grouped
-  const groups = {};
-  for (const d of r.designations) (groups[d.group] ||= []).push(d);
-  const order = ['heritage', 'trees', 'flood', 'land', 'nature', 'policy', 'other'];
-  const desigHtml = order.filter((g) => groups[g]).map((g) => `
-    <div class="group"><h4>${esc(GROUPS[g])}</h4><ul>${groups[g].map(designationItem).join('')}</ul></div>`).join('');
-  const adminHtml = groups.admin ? `<details class="admin"><summary>Administrative areas (${groups.admin.length})</summary><ul>${groups.admin.map(designationItem).join('')}</ul></details>` : '';
-  const noneFound = r.dataSource && !desigHtml ? '<p class="muted small">No other designations recorded at this point.</p>' : '';
-  const notChecked = !r.dataSource ? '<p class="muted small">Other designations were not checked (live data unavailable).</p>' : '';
-
-  const nearbyRelevant = r.nearby.filter((d) => d.group !== 'admin');
-  const nearbyHtml = nearbyRelevant.length ? `
-    <details class="nearby" ${nearbyRelevant.some((d) => d.dataset === 'listed-building' || d.group === 'trees') ? 'open' : ''}>
-      <summary>Within ${state.nearMetres} m but not at the point (${nearbyRelevant.length})</summary>
-      <ul>${nearbyRelevant.map(designationItem).join('')}</ul>
-    </details>` : '';
+  const checklistHtml = renderChecklist(r);
+  const recordsHtml = renderAllRecords(r);
 
   const warnHtml = r.warnings.length ? `<ul class="warnings">${r.warnings.map((w) => `<li>${esc(w)}</li>`).join('')}</ul>` : '';
   const alts = loc.alternatives && loc.alternatives.length ? `
@@ -334,13 +389,14 @@ function renderResult(r) {
       <dt>Location</dt><dd>${esc(loc.label)}</dd>
       <dt>Found by</dt><dd>${esc(loc.source)} <span class="pill pill-${esc(loc.precision)}">${esc(precisionLabel(loc.precision))}</span></dd>
       <dt>Grid ref</dt><dd>${loc.easting != null ? `E ${esc(loc.easting)}, N ${esc(loc.northing)}` : '–'} <span class="muted">· ${loc.lat.toFixed(6)}, ${loc.lon.toFixed(6)}</span></dd>
-      <dt>Borough</dt><dd>${r.insideKingston === true ? 'Kingston upon Thames' : r.insideKingston === false ? '<strong>Outside Kingston</strong>' : '–'}</dd>
+      <dt>Borough</dt><dd>${r.insideKingston === true ? 'Kingston upon Thames' : r.insideKingston === false ? '<strong>Outside Kingston</strong>' : '–'}${r.ward ? ` <span class="muted">· ${esc(r.ward)} ward</span>` : ''}</dd>
+      ${r.plot ? `<dt>Plot</dt><dd>Land Registry INSPIRE ID <a href="${entityUrl(r.plot.entity)}" target="_blank" rel="noopener">${esc(r.plot.inspireId)}</a> <span class="muted">· about ${esc(r.plot.areaM2.toLocaleString('en-GB'))} m²${r.plot.otherTitles ? ` · ${r.plot.otherTitles} other title${r.plot.otherTitles > 1 ? 's' : ''} here` : ''}</span></dd>` : ''}
     </dl>
     ${alts}
     ${warnHtml}
-    ${a4.status === 'inside' || a4.near.length ? `<section><h3>Article 4</h3>${dirHtml}${rightsHtml}${areaHtml}${nearA4}</section>` : ''}
-    <section><h3>Other designations at this point</h3>${desigHtml}${noneFound}${notChecked}${adminHtml}</section>
-    ${nearbyHtml}
+    ${a4.status === 'inside' || a4.status === 'plot' || a4.near.length ? `<section><h3>Article 4</h3>${dirHtml}${rightsHtml}${areaHtml}${nearA4}</section>` : ''}
+    ${checklistHtml}
+    ${recordsHtml}
     <footer class="result-foot">
       <span class="muted small">Checked ${new Date(r.checkedAt).toLocaleString('en-GB')}${r.dataSource ? ` · ${esc(r.dataSource)}` : ''}</span>
       <span class="actions">
@@ -353,6 +409,60 @@ function renderResult(r) {
 
 function precisionLabel(p) {
   return { exact: 'exact point', address: 'building match', street: 'street-level match', postcode: 'postcode centre' }[p] || p;
+}
+
+function renderChecklist(r) {
+  const rows = r.checklist || [];
+  if (!rows.length) return '';
+  const sections = [];
+  for (const c of rows) {
+    let sec = sections.find((x) => x.name === c.section);
+    if (!sec) sections.push(sec = { name: c.section, rows: [] });
+    sec.rows.push(c);
+  }
+  const found = rows.filter((c) => ['yes', 'plot', 'near'].includes(c.status)).length;
+  const notPub = rows.filter((c) => c.status === 'not_published').length;
+  const itemHtml = (c) => {
+    if (!c.items.length) return '';
+    const seen = new Set();
+    return `<ul class="ck-items">${c.items.filter((i) => {
+      const k = `${i.entity}|${i.where}`; if (seen.has(k)) return false; seen.add(k); return true;
+    }).map((i) => {
+      const extra = [i.grade && `Grade ${i.grade}`, i.level && `Level ${i.level}`].filter(Boolean).join(' · ');
+      const where = i.where === 'plot' ? '<span class="where where-plot">on plot</span>' : i.where === 'near' ? `<span class="where where-near">within ${state.nearMetres} m</span>` : '';
+      const name = i.name || 'Unnamed record';
+      return `<li>${i.entity ? `<a href="${entityUrl(i.entity)}" target="_blank" rel="noopener">${esc(name)}</a>` : esc(name)}${extra ? ` <span class="muted">${esc(extra)}</span>` : ''} ${where}</li>`;
+    }).join('')}</ul>`;
+  };
+  return `
+    <section class="checklist">
+      <h3>Search checklist</h3>
+      <p class="muted small">${found} found${notPub ? ` · ${notPub} not published for this area, so they can't be answered here` : ''}</p>
+      ${sections.map((sec) => `
+        <h4>${esc(sec.name)}</h4>
+        <ul class="ck">${sec.rows.map((c) => `
+          <li class="ck-row ck-${c.status}">
+            <span class="ck-label">${esc(c.label)}</span>
+            <span class="chip chip-${c.status}">${esc(STATUS_TEXT[c.status] || c.status)}</span>
+            ${itemHtml(c)}
+          </li>`).join('')}</ul>`).join('')}
+    </section>`;
+}
+
+function renderAllRecords(r) {
+  if (!r.dataSource) return '';
+  const all = [
+    ...r.designations.map((d) => ({ ...d, where: 'point' })),
+    ...(r.plotDesignations || []).map((d) => ({ ...d, where: 'plot' })),
+    ...r.nearby.filter((d) => d.dataset !== 'title-boundary').map((d) => ({ ...d, where: 'near' })),
+  ];
+  if (!all.length) return '';
+  const label = { point: 'At the point', plot: 'Elsewhere on the plot', near: `Within ${state.nearMetres} m` };
+  const blocks = ['point', 'plot', 'near'].map((w) => {
+    const list = all.filter((d) => d.where === w);
+    return list.length ? `<h4>${label[w]} (${list.length})</h4><ul>${list.map(designationItem).join('')}</ul>` : '';
+  }).join('');
+  return `<details class="records"><summary>All records found (${all.length})</summary>${blocks}</details>`;
 }
 
 function designationItem(d) {
@@ -379,26 +489,24 @@ function wireResult(el, r) {
 
 function summaryText(r) {
   const row = resultToRow(r);
+  const a4Text = { Y: 'YES', N: 'No', 'PART OF PLOT': 'PART OF PLOT' }[row.article4] || 'Unknown';
   const lines = [
     `Location: ${row.matched_location}`,
     `Grid ref: E ${row.easting} N ${row.northing} (${precisionLabel(r.location.precision)})`,
-    `Article 4: ${row.article4 === 'Y' ? 'YES' : row.article4 === 'N' ? 'No' : 'Unknown'}${row.article4_borderline === 'Y' ? ' (borderline – verify)' : ''}`,
   ];
+  if (row.land_registry_inspire_id) lines.push(`Land Registry plot: INSPIRE ID ${row.land_registry_inspire_id} (about ${row.plot_area_m2} m2)`);
+  if (row.ward) lines.push(`Ward: ${row.ward}`);
+  lines.push(`Article 4: ${a4Text}${row.article4_borderline === 'Y' ? ' (borderline - verify)' : ''}`);
   if (row.article4_directions) lines.push(`  Direction(s): ${row.article4_directions}`);
   if (row.article4_rights_removed) lines.push(`  Rights removed: ${row.article4_rights_removed}`);
   if (row.article4_areas) lines.push(`  Area(s): ${row.article4_areas}`);
-  const add = (k, v) => v && lines.push(`${k}: ${v}`);
-  add('Conservation area', row.conservation_area);
-  add('Listed building', row.listed_building_at_point);
-  add('Listed buildings nearby', row.listed_buildings_nearby);
-  add('Tree preservation', row.tree_preservation);
-  add('Flood risk', row.flood_risk);
-  add('Green belt / open land', row.green_belt_open_land);
-  add('Other heritage', row.heritage_other);
-  add('Nature / environment', row.nature_environment);
-  add('Plans / sites', row.plans_policy_sites);
-  add('Other', row.other_designations);
-  add('Notes', row.warnings);
+  let section = '';
+  for (const c of r.checklist || []) {
+    if (c.id === 'article4') continue;
+    if (c.section !== section) { section = c.section; lines.push('', section.toUpperCase()); }
+    lines.push(`  ${c.label}: ${row[c.id] || ''}`);
+  }
+  if (row.warnings) lines.push('', `Notes: ${row.warnings}`);
   lines.push(`Checked: ${new Date(r.checkedAt).toLocaleString('en-GB')} via ${row.data_source}`);
   return lines.join('\n');
 }

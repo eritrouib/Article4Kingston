@@ -77,10 +77,19 @@
         <h2>How a check works</h2>
         <ol>
           <li>The location is found: grid references and coordinates are used as given; postcodes use the postcode centre (postcodes.io); addresses are matched against OpenStreetMap within the borough.</li>
-          <li>The point is sent to the government <a href="https://www.planning.data.gov.uk" target="_blank" rel="noopener">Planning Data</a> service, which returns every designation it lies in — Article 4 areas, conservation areas, listed buildings, tree preservation areas, green belt, flood zones, SSSIs and more.</li>
-          <li>A second query looks a short distance around the point, so listed buildings and protected trees nearby, and boundaries that run close to the property, are flagged as <em>borderline</em>.</li>
-          <li>The Article 4 result is cross-checked against Kingston's downloaded Article 4 boundaries. If the service can't be reached, the check falls back to the copy held in this repository, and says so.</li>
+          <li>The point is sent to the government <a href="https://www.planning.data.gov.uk" target="_blank" rel="noopener">Planning Data</a> service, which returns every designation it lies in.</li>
+          <li>The HM Land Registry title boundary (INSPIRE polygon) at the point is found, and anything that overlaps any part of that plot is listed as <em>on plot</em>. Designations that only touch the plot edge are not counted.</li>
+          <li>A third query looks a short distance around the point, so listed buildings, protected trees and boundaries close to the property are flagged as <em>nearby</em>.</li>
+          <li>The Article 4 result is cross-checked against Kingston's downloaded Article 4 boundaries. If the service can't be reached, the check falls back to the saved copy and says so.</li>
         </ol>
+        <h2>Reading the search checklist</h2>
+        <ul>
+          <li><strong>Yes</strong>: applies at the point. <strong>Part of plot</strong>: applies to part of the Land Registry plot, not the point. <strong>Nearby</strong>: within the chosen distance, but not on the plot.</li>
+          <li><strong>No</strong>: nothing found, and this area does publish that type of data.</li>
+          <li><strong>Not published here</strong>: the council or national body hasn't published that data to Planning Data for this area, so the tool can't answer. Check the council's own register.</li>
+          <li><strong>Not confirmed</strong>: nothing found, but the tool couldn't confirm whether the data is published. Treat as unanswered.</li>
+        </ul>
+        <p class="small muted">Land Registry INSPIRE polygons show the extent of registered titles, not legal boundaries, and don't include the title number. Unregistered land has no polygon, so only the point and nearby checks run.</p>
         <h2>Kingston's Article 4 directions</h2>
         <div id="directions-list"><p class="muted">Loading…</p></div>
         <h2>Limits</h2>
@@ -91,7 +100,7 @@
           <li>Address lookups use the public OpenStreetMap service and are limited to one per second.</li>
         </ul>
         <p><strong>Created by @ET.</strong></p>
-        <p class="muted">Contains public sector information licensed under the Open Government Licence v3.0. Contains OS data &copy; Crown copyright and database right. Map data &copy; OpenStreetMap contributors.</p>
+        <p class="muted">Contains public sector information licensed under the Open Government Licence v3.0. Contains OS data &copy; Crown copyright and database right. Map data &copy; OpenStreetMap contributors. Land Registry plots: This information is subject to Crown copyright and database rights 2026 and is reproduced with the permission of HM Land Registry. The polygons (including the associated geometry, namely x, y co-ordinates) are subject to Crown copyright and database rights 2026 Ordnance Survey AC0000851063.</p>
       </div>
     </section>
 
@@ -100,6 +109,7 @@
       <div class="legend" aria-hidden="true">
         <span><i class="sw sw-a4"></i>Article 4 area</span>
         <span><i class="sw sw-ca"></i>Conservation area</span>
+        <span><i class="sw sw-plot"></i>Land Registry plot</span>
         <span><i class="sw sw-bd"></i>Borough boundary</span>
       </div>
     </section>

@@ -84,14 +84,20 @@ const a4Entity = {
 const caEntity = { entity: 44000001, dataset: 'conservation-area', name: 'Kingston Old Town', reference: 'CA1', 'end-date': '' };
 const endedCa = { entity: 44000002, dataset: 'conservation-area', name: 'Abolished CA', reference: 'CA9', 'end-date': '2001-01-01' };
 const lbEntity = { entity: 31000001, dataset: 'listed-building', name: 'The Guildhall', reference: '1080000', 'listed-building-grade': 'II', 'end-date': '' };
+const lad = { entity: 8600304, dataset: 'local-authority-district', name: 'Kingston upon Thames', reference: 'E09000021', 'end-date': '' };
+const ward = { entity: 804836, dataset: 'ward', name: 'Kingston Town', reference: 'E05013938', 'end-date': '' };
+const nonAdmin = (list) => list.filter((d) => d.group !== 'admin');
 const directions = {
   A4D2: { entity: 1, reference: 'A4D2', name: 'Commercial, business and service use to residential', 'start-date': '2022-07-31' },
 };
 
 test('live check: inside Article 4, with designations and nearby listed building', async () => {
   const fetch = mockFetch([
-    [/geometry=POLYGON/, { entities: [a4Entity, caEntity, lbEntity], links: {} }],
-    [/latitude=/, { entities: [a4Entity, caEntity, endedCa], links: {} }],
+    [/geometry=POLYGON/, { entities: [lad, a4Entity, caEntity, lbEntity], links: {} }],
+    [/latitude=/, { entities: [lad, ward, a4Entity, caEntity, endedCa], links: {} }],
+    [/dataset=conservation-area&geometry_entity=8600304/, { entities: [{ entity: 1, dataset: 'conservation-area' }], count: 28 }],
+    [/dataset=listed-building&geometry_entity=8600304/, { entities: [{ entity: 2, dataset: 'listed-building' }], count: 163 }],
+    [/dataset=smoke-control-area/, { __status: 422 }],
   ]);
   const loc = { ...INSIDE, label: 'test', precision: 'address', source: 'test' };
   const r = await checkLocation(loc, { fetch, a4Directions: directions, legacyA4: legacy, boundary, nearMetres: 25 });
@@ -99,18 +105,26 @@ test('live check: inside Article 4, with designations and nearby listed building
   assert.equal(r.article4.method, 'live');
   assert.equal(r.article4.directions[0].name, directions.A4D2.name);
   assert.equal(r.insideKingston, true);
-  assert.deepEqual(r.designations.map((d) => d.name), ['Kingston Old Town'], 'ended designation dropped');
+  assert.deepEqual(nonAdmin(r.designations).map((d) => d.name), ['Kingston Old Town'], 'ended designation dropped');
   assert.deepEqual(r.nearby.map((d) => d.name), ['The Guildhall'], 'nearby excludes things already at point');
+  assert.equal(r.ward, 'Kingston Town');
+  const byId = Object.fromEntries(r.checklist.map((c) => [c.id, c]));
+  assert.equal(byId.article4.status, 'yes');
+  assert.equal(byId.conservation.status, 'yes');
+  assert.equal(byId.listed.status, 'near');
+  assert.equal(byId.smoke.status, 'not_published', '422 = dataset not available');
+  assert.equal(byId.green_belt.status, 'not_published', '404/empty = none published');
   const row = resultToRow(r);
   assert.equal(row.article4, 'Y');
-  assert.equal(row.conservation_area, 'Kingston Old Town');
-  assert.equal(row.listed_buildings_nearby, 'The Guildhall');
+  assert.equal(row.conservation, 'Y: Kingston Old Town');
+  assert.equal(row.listed, 'NEARBY: The Guildhall (Grade II) [nearby]');
+  assert.equal(row.smoke, 'NOT PUBLISHED');
 });
 
 test('live check: outside but near an Article 4 boundary is flagged borderline', async () => {
   const fetch = mockFetch([
-    [/geometry=POLYGON/, { entities: [a4Entity], links: {} }],
-    [/latitude=/, { entities: [], links: {} }],
+    [/geometry=POLYGON/, { entities: [lad, a4Entity], links: {} }],
+    [/latitude=/, { entities: [lad], links: {} }],
   ]);
   const r = await checkLocation({ ...OUTSIDE, label: 't', precision: 'postcode' }, { fetch, legacyA4: legacy, boundary });
   assert.equal(r.article4.status, 'outside');
@@ -131,8 +145,8 @@ test('offline fallback uses legacy polygons and says so', async () => {
 
 test('disagreement between live point query and downloaded boundaries is flagged', async () => {
   const fetch = mockFetch([
-    [/geometry=POLYGON/, { entities: [], links: {} }],
-    [/latitude=/, { entities: [], links: {} }],
+    [/geometry=POLYGON/, { entities: [lad], links: {} }],
+    [/latitude=/, { entities: [lad], links: {} }],
   ]);
   // Downloaded areas say "inside" (legacy geometry relabelled as live), API says outside.
   const fakeLive = { type: 'FeatureCollection', features: legacy.features.map((f, i) => ({ ...f, properties: { ...f.properties, entity: 900 + i } })) };
@@ -143,12 +157,12 @@ test('disagreement between live point query and downloaded boundaries is flagged
 test('pagination follows links.next', async () => {
   let n = 0;
   const fetch = mockFetch([
-    [/geometry=POLYGON/, { entities: [], links: {} }],
+    [/geometry=POLYGON/, { entities: [lad], links: {} }],
     [/offset=100/, { entities: [caEntity], links: {} }],
-    [/latitude=/, () => { n++; return { entities: [a4Entity], links: { next: '/entity.json?latitude=1&offset=100' } }; }],
+    [/latitude=/, () => { n++; return { entities: [lad, a4Entity], links: { next: '/entity.json?latitude=1&offset=100' } }; }],
   ]);
   const r = await checkLocation({ ...INSIDE, label: 't', precision: 'exact' }, { fetch, legacyA4: legacy, boundary });
-  assert.equal(r.designations.length, 1);
+  assert.equal(nonAdmin(r.designations).length, 1);
   assert.equal(n, 1);
 });
 
@@ -237,7 +251,7 @@ test('result names the direction and lists the rights removed', async () => {
     'article-4-direction': '112', notes: 'Article 4 Direction at Seething Wells Filter Beds', 'end-date': '',
     'permitted-development-rights': 'Removes permitted development rights to erect fencing, gates and other means of enclosure on the site.',
   };
-  const fetch = mockFetch([[/geometry=POLYGON/, { entities: [], links: {} }], [/latitude=/, { entities: [seething], links: {} }]]);
+  const fetch = mockFetch([[/geometry=POLYGON/, { entities: [lad], links: {} }], [/latitude=/, { entities: [lad, seething], links: {} }]]);
   const r = await checkLocation({ ...INSIDE, label: 't', precision: 'exact' }, { fetch, a4Directions: KINGSTON_DIRECTIONS, legacyA4: legacy, boundary });
   assert.equal(r.article4.directions[0].reference, 'A4D1');
   assert.equal(r.article4.directions[0].name, 'Seething Wells Filter Bed');
@@ -245,4 +259,113 @@ test('result names the direction and lists the rights removed', async () => {
   const row = resultToRow(r);
   assert.equal(row.article4_directions, 'A4D1 Seething Wells Filter Bed');
   assert.match(row.article4_rights_removed, /fencing/);
+});
+
+// ---------------------------------------------------------------------------
+// Land Registry plot, unreliable answers, coverage
+// ---------------------------------------------------------------------------
+function squareAround(lat, lon, metres) {
+  const dLat = metres / 111320;
+  const dLon = metres / (111320 * Math.cos((lat * Math.PI) / 180));
+  return { type: 'MultiPolygon', coordinates: [[[[lon - dLon, lat - dLat], [lon + dLon, lat - dLat], [lon + dLon, lat + dLat], [lon - dLon, lat + dLat], [lon - dLon, lat - dLat]]]] };
+}
+
+test('geometryArea measures a 20 m square as ~400 m2', () => {
+  const { geometryArea } = globalThis.A4Lookup;
+  const a = geometryArea(squareAround(51.4, -0.3, 10));
+  assert.ok(Math.abs(a - 400) < 5, String(a));
+});
+
+test('wktParam escapes only spaces by default', () => {
+  const { wktParam } = globalThis.A4Lookup;
+  assert.equal(wktParam('POLYGON((1 2,3 4))'), 'POLYGON((1%202,3%204))');
+  assert.equal(wktParam('POLYGON((1 2,3 4))', 'encoded'), 'POLYGON((1%202%2C3%204))');
+});
+
+test('plot check: Article 4 and listed outline on the plot but not the point', async () => {
+  const smallTitle = { entity: 12000000001, dataset: 'title-boundary', reference: '111', 'end-date': '' };
+  const bigTitle = { entity: 12000000002, dataset: 'title-boundary', reference: '222', 'end-date': '' };
+  const outline = { entity: 31500001, dataset: 'listed-building-outline', name: '3-5 Apple Market', 'end-date': '' };
+  const fetch = mockFetch([
+    [/entity\/12000000001\.geojson/, { type: 'Feature', geometry: squareAround(OUTSIDE.lat, OUTSIDE.lon, 8) }],
+    [/entity\/12000000002\.geojson/, { type: 'Feature', geometry: squareAround(OUTSIDE.lat, OUTSIDE.lon, 80) }],
+    [/geometry_relation=overlaps&geometry_entity=12000000001/, { entities: [a4Entity, bigTitle], count: 2 }],
+    [/geometry_relation=within&geometry_entity=12000000001/, { entities: [outline], count: 1 }],
+    [/geometry_relation=contains&geometry_entity=12000000001/, { entities: [lad], count: 1 }],
+    [/geometry=POLYGON/, { entities: [lad], links: {} }],
+    [/latitude=/, { entities: [lad, smallTitle, bigTitle], links: {} }],
+  ]);
+  const r = await checkLocation({ ...OUTSIDE, label: 't', precision: 'exact' }, { fetch, a4Directions: directions, legacyA4: legacy, boundary });
+  assert.equal(r.plot.inspireId, '111', 'smallest title containing the point is used');
+  assert.ok(Math.abs(r.plot.areaM2 - 256) < 5);
+  assert.equal(r.article4.status, 'plot');
+  assert.equal(r.article4.borderline, true);
+  assert.ok(r.article4.areas[0].onPlot);
+  assert.ok(r.warnings.some((w) => /part of the Land Registry plot/.test(w)));
+  const listed = r.checklist.find((c) => c.id === 'listed');
+  assert.equal(listed.status, 'plot');
+  const row = resultToRow(r);
+  assert.equal(row.article4, 'PART OF PLOT');
+  assert.equal(row.land_registry_inspire_id, '111');
+  assert.equal(row.listed, 'PART OF PLOT: 3-5 Apple Market [plot]');
+});
+
+test('CSV cell lists plot and nearby records after the point ones', () => {
+  const { checklistCell } = globalThis.A4Lookup;
+  const cell = checklistCell({ status: 'yes', items: [
+    { name: 'Flood zone 3', where: 'plot' }, { name: 'Flood zone 2', where: 'point' }, { name: 'Flood zone 2', where: 'point' },
+  ] });
+  assert.equal(cell, 'Y: Flood zone 2; Flood zone 3 [plot]');
+});
+
+test('nearby check that ignores the location filter is discarded with a warning', async () => {
+  const bogus = { entities: [{ entity: 1, dataset: 'local-authority', typology: 'organisation', name: 'Somewhere' }], count: 25000000 };
+  const fetch = mockFetch([
+    [/geometry=POLYGON/, bogus],
+    [/latitude=/, { entities: [lad, caEntity], links: {} }],
+  ]);
+  const r = await checkLocation({ ...INSIDE, label: 't', precision: 'exact' }, { fetch, legacyA4: legacy, boundary });
+  assert.equal(r.nearby.length, 0);
+  assert.ok(r.warnings.some((w) => /could not be checked this time/.test(w)));
+  assert.equal(fetch.calls.filter((u) => /geometry=POLYGON/.test(u)).length, 2, 'retried with the other encoding');
+  assert.ok(fetch.calls.some((u) => /geometry=POLYGON\(\(/.test(u)), 'first try keeps brackets unescaped');
+});
+
+test('point answer without the borough falls back to offline Article 4 check', async () => {
+  const fetch = mockFetch([
+    [/geometry=POLYGON/, { entities: [lad] }],
+    [/latitude=/, { entities: [{ entity: 7, dataset: 'local-authority', typology: 'organisation' }] }],
+  ]);
+  const r = await checkLocation({ ...INSIDE, label: 't', precision: 'exact' }, { fetch, legacyA4: legacy, boundary });
+  assert.equal(r.article4.method, 'offline-legacy');
+  assert.equal(r.article4.status, 'inside');
+  assert.ok(r.checklist.filter((c) => c.id !== 'article4').every((c) => c.status === 'unchecked'));
+});
+
+test('coverage: published, none, missing dataset, and unknown', async () => {
+  const { fetchCoverage } = globalThis.A4Lookup;
+  const fetch = mockFetch([
+    [/dataset=conservation-area&/, { entities: [{ entity: 1, dataset: 'conservation-area' }], count: 28 }],
+    [/dataset=green-belt&/, { entities: [], count: 0 }],
+    [/dataset=smoke-control-area&/, { __status: 422 }],
+    [/dataset=tree&/, new Error('network')],
+    [/dataset=ward&/, { entities: [{ entity: 9, dataset: 'local-authority' }], count: 25000000 }],
+  ]);
+  const cov = await fetchCoverage(fetch, 8600304, ['conservation-area', 'green-belt', 'smoke-control-area', 'tree', 'ward']);
+  assert.deepEqual(cov, { 'conservation-area': true, 'green-belt': false, 'smoke-control-area': false, tree: null, ward: null });
+});
+
+test('coverage is fetched once per borough and reused', async () => {
+  let coverageCalls = 0;
+  const fetch = mockFetch([
+    [/geometry_entity=8600304/, () => { coverageCalls++; return { entities: [], count: 0 }; }],
+    [/geometry=POLYGON/, { entities: [lad] }],
+    [/latitude=/, { entities: [lad] }],
+  ]);
+  const deps = { fetch, legacyA4: legacy, boundary, coverageCache: new Map() };
+  await checkLocation({ ...INSIDE, label: 't', precision: 'exact' }, deps);
+  const first = coverageCalls;
+  await checkLocation({ ...OUTSIDE, label: 't', precision: 'exact' }, deps);
+  assert.ok(first > 10);
+  assert.equal(coverageCalls, first);
 });

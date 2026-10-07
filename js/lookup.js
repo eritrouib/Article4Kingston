@@ -38,7 +38,7 @@ const DATASETS = {
   'article-4-direction-area': { label: 'Article 4 direction area', group: 'a4' },
   'conservation-area': { label: 'Conservation area', group: 'heritage' },
   'listed-building': { label: 'Listed building', group: 'heritage' },
-  'listed-building-outline': { label: 'Listed building outline', group: 'heritage' },
+  'listed-building-outline': { label: 'Listed building (outline)', group: 'heritage' },
   'locally-listed-building': { label: 'Locally listed building', group: 'heritage' },
   'building-preservation-notice': { label: 'Building preservation notice', group: 'heritage' },
   'certificate-of-immunity': { label: 'Certificate of immunity from listing', group: 'heritage' },
@@ -66,6 +66,9 @@ const DATASETS = {
   'green-belt': { label: 'Green belt', group: 'land' },
   'common-land-and-village-green': { label: 'Common land / village green', group: 'land' },
   'area-of-outstanding-natural-beauty': { label: 'National landscape (AONB)', group: 'land' },
+  'local-green-space': { label: 'Local green space', group: 'land' },
+  'agricultural-land-classification': { label: 'Agricultural land classification', group: 'land' },
+  'asset-of-community-value': { label: 'Asset of community value', group: 'policy' },
   'brownfield-land': { label: 'Brownfield land register', group: 'policy' },
   'brownfield-site': { label: 'Brownfield site', group: 'policy' },
   'local-development-order': { label: 'Local development order', group: 'policy' },
@@ -83,6 +86,10 @@ const DATASETS = {
   'built-up-area': { label: 'Built-up area', group: 'admin' },
   'region': { label: 'Region', group: 'admin' },
   'address': { label: 'Address', group: 'admin' },
+  'title-boundary': { label: 'Land Registry title boundary', group: 'admin' },
+  'local-plan-boundary': { label: 'Local plan boundary', group: 'admin' },
+  'waste-plan-boundary': { label: 'Waste plan boundary', group: 'admin' },
+  'local-resilience-forum-boundary': { label: 'Local resilience forum', group: 'admin' },
   'road': { label: 'Road', group: 'admin' },
 };
 
@@ -162,7 +169,7 @@ async function getJson(fetchFn, url, { retries = 2 } = {}) {
       const res = await fetchFn(url, { headers: { Accept: 'application/json' } });
       if (res.status === 404) return { __notFound: true };
       if (res.status === 429 || res.status >= 500) throw new Error(`HTTP ${res.status}`);
-      if (!res.ok) throw Object.assign(new Error(`HTTP ${res.status}`), { fatal: true });
+      if (!res.ok) throw Object.assign(new Error(`HTTP ${res.status}`), { fatal: true, status: res.status });
       return await res.json();
     } catch (e) {
       lastErr = e;
@@ -300,23 +307,209 @@ function absolute(u) {
   return u.startsWith('http') ? u : PLANNING_API + u;
 }
 
+// ---------------------------------------------------------------------------
+// LLC search checklist: the questions a Local Land Charges search usually asks,
+// and which Planning Data datasets answer each one.
+// ---------------------------------------------------------------------------
+const CHECKLIST = [
+  { id: 'article4', section: 'Planning restrictions', label: 'Article 4 direction', datasets: ['article-4-direction-area'] },
+  { id: 'ldo', section: 'Planning restrictions', label: 'Local development order', datasets: ['local-development-order'] },
+  { id: 'conservation', section: 'Heritage', label: 'Conservation area', datasets: ['conservation-area'] },
+  { id: 'listed', section: 'Heritage', label: 'Listed building', datasets: ['listed-building', 'listed-building-outline'] },
+  { id: 'locally_listed', section: 'Heritage', label: 'Locally listed building', datasets: ['locally-listed-building'] },
+  { id: 'bpn', section: 'Heritage', label: 'Building preservation notice', datasets: ['building-preservation-notice'] },
+  { id: 'immunity', section: 'Heritage', label: 'Certificate of immunity from listing', datasets: ['certificate-of-immunity'] },
+  { id: 'monument', section: 'Heritage', label: 'Scheduled monument', datasets: ['scheduled-monument'] },
+  { id: 'park_garden', section: 'Heritage', label: 'Registered park or garden', datasets: ['park-and-garden'] },
+  { id: 'archaeology', section: 'Heritage', label: 'Archaeological priority area', datasets: ['archaeological-priority-area'] },
+  { id: 'heritage_risk', section: 'Heritage', label: 'Heritage at risk', datasets: ['heritage-at-risk'] },
+  { id: 'tpo', section: 'Trees', label: 'Tree preservation order', datasets: ['tree-preservation-zone', 'tree'] },
+  { id: 'ancient_woodland', section: 'Trees', label: 'Ancient woodland', datasets: ['ancient-woodland'] },
+  { id: 'flood', section: 'Environment', label: 'Flood risk zone', datasets: ['flood-risk-zone'] },
+  { id: 'aqma', section: 'Environment', label: 'Air quality management area', datasets: ['air-quality-management-area'] },
+  { id: 'smoke', section: 'Environment', label: 'Smoke control area', datasets: ['smoke-control-area'] },
+  { id: 'contaminated', section: 'Environment', label: 'Contaminated land', datasets: ['contaminated-land'] },
+  { id: 'green_belt', section: 'Land & nature', label: 'Green belt', datasets: ['green-belt'] },
+  { id: 'common_land', section: 'Land & nature', label: 'Common land / village green', datasets: ['common-land-and-village-green'] },
+  { id: 'local_green_space', section: 'Land & nature', label: 'Local green space', datasets: ['local-green-space'] },
+  { id: 'sssi', section: 'Land & nature', label: 'Site of special scientific interest', datasets: ['site-of-special-scientific-interest'] },
+  { id: 'nature_reserve', section: 'Land & nature', label: 'Local nature reserve', datasets: ['local-nature-reserve'] },
+  { id: 'brownfield', section: 'Sites & community', label: 'Brownfield land register', datasets: ['brownfield-land', 'brownfield-site'] },
+  { id: 'acv', section: 'Sites & community', label: 'Asset of community value', datasets: ['asset-of-community-value'] },
+  { id: 'neighbourhood', section: 'Sites & community', label: 'Neighbourhood plan area', datasets: ['neighbourhood-plan-area'] },
+];
+const CHECKLIST_DATASETS = [...new Set(CHECKLIST.flatMap((c) => c.datasets))];
+
+// ---------------------------------------------------------------------------
+// Spatial queries with sanity checks.
+// Planning Data occasionally ignores a location filter (seen with some URL
+// encodings of WKT shapes) and returns unrelated records. A genuine spatial
+// answer for a place in England always includes the England border or the
+// local authority district, so anything else is rejected and retried.
+// ---------------------------------------------------------------------------
+async function entitySearch(fetchFn, params, maxPages = 10) {
+  const list = [];
+  let count = null;
+  let url = `${PLANNING_API}/entity.json?${params}`;
+  for (let page = 0; page < maxPages && url; page++) {
+    const data = await getJson(fetchFn, url);
+    if (data.__notFound) break;
+    if (count == null && typeof data.count === 'number') count = data.count;
+    list.push(...(data.entities || []));
+    const next = data.links && data.links.next;
+    url = next && (data.entities || []).length ? absolute(next) : null;
+  }
+  return { list, count };
+}
+
+function looksSpatial(list) {
+  return list.some((e) => e.dataset === 'border' || e.dataset === 'local-authority-district');
+}
+
+function looksFiltered(res) {
+  // An ignored filter returns the whole national register (millions of records)
+  // or organisation records, which are never geographic answers.
+  if (res.count != null && res.count > 5000) return false;
+  return !res.list.some((e) => e.typology === 'organisation' || e.dataset === 'local-authority');
+}
+
+/** WKT for a query string. Only spaces are escaped by default; some services mishandle %2C/%28. */
+function wktParam(wkt, style = 'raw') {
+  return style === 'raw' ? wkt.replace(/ /g, '%20') : encodeURIComponent(wkt);
+}
+
+async function pointQuery(fetchFn, lat, lon) {
+  const params = `limit=100&exclude_field=geometry&latitude=${lat.toFixed(7)}&longitude=${lon.toFixed(7)}`;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const { list } = await entitySearch(fetchFn, params);
+    if (looksSpatial(list)) return list;
+    if (!list.length) return list; // outside England / nothing recorded
+  }
+  throw new Error('Planning Data gave an unexpected answer for this point');
+}
+
+async function nearQuery(fetchFn, lat, lon, metres) {
+  const wkt = bufferWkt(lat, lon, metres);
+  for (const style of ['raw', 'encoded']) {
+    const { list } = await entitySearch(fetchFn,
+      `geometry_relation=intersects&geometry=${wktParam(wkt, style)}&limit=100&exclude_field=geometry`);
+    if (looksSpatial(list)) return list;
+  }
+  return null; // couldn't get a trustworthy answer
+}
+
+/** Area of a (multi)polygon in square metres (planar, local projection). */
+function geometryArea(geometry) {
+  let lat0 = null, lon0 = null;
+  for (const poly of polygonsOf(geometry)) { if (poly[0] && poly[0][0]) { [lon0, lat0] = poly[0][0]; break; } }
+  if (lat0 == null) return 0;
+  const proj = toLocal(lat0, lon0);
+  let total = 0;
+  for (const poly of polygonsOf(geometry)) {
+    poly.forEach((ring, i) => {
+      const pts = ring.map(proj);
+      let a = 0;
+      for (let k = 0, j = pts.length - 1; k < pts.length; j = k++) a += (pts[j][0] + pts[k][0]) * (pts[j][1] - pts[k][1]);
+      total += (i === 0 ? 1 : -1) * Math.abs(a / 2);
+    });
+  }
+  return total;
+}
+
+async function fetchEntityGeometry(fetchFn, entity) {
+  const data = await getJson(fetchFn, `${PLANNING_API}/entity/${entity}.geojson`);
+  if (data.__notFound) return null;
+  if (data.type === 'Feature') return data.geometry || null;
+  if (data.type === 'FeatureCollection') return (data.features && data.features[0] && data.features[0].geometry) || null;
+  return data.geometry || null;
+}
+
 /**
- * Query planning.data.gov.uk for everything at a point, and everything within
- * `nearMetres` of it. Returns {at: entity[], near: entity[]} (current entities only).
+ * Find the Land Registry plot (INSPIRE title boundary) at the point and list what
+ * genuinely overlaps it. "Touching" along a shared edge is not counted, so a
+ * conservation area whose boundary follows the plot edge doesn't show as on the plot.
  */
-async function queryPlanningData(fetchFn, lat, lon, { nearMetres = 25, today } = {}) {
+async function plotQuery(fetchFn, atList, lat, lon, today) {
+  const titles = atList.filter((e) => e.dataset === 'title-boundary').slice(0, 4);
+  if (!titles.length) return null;
+  const withGeom = await Promise.all(titles.map(async (t) => {
+    try {
+      const geometry = await fetchEntityGeometry(fetchFn, t.entity);
+      return geometry ? { entity: t.entity, reference: t.reference, geometry, areaM2: geometryArea(geometry) } : null;
+    } catch { return null; }
+  }));
+  const candidates = withGeom.filter(Boolean);
+  if (!candidates.length) return null;
+  // Freehold and leasehold titles can overlap; the smallest one containing the point
+  // is almost always the property itself rather than an estate or block.
+  const containing = candidates.filter((c) => pointInGeometry(lat, lon, c.geometry));
+  const plot = (containing.length ? containing : candidates).sort((a, b) => a.areaM2 - b.areaM2)[0];
+
+  const base = `geometry_entity=${plot.entity}&limit=100&exclude_field=geometry`;
+  const results = await Promise.all(['overlaps', 'within', 'contains'].map(async (rel) => {
+    try {
+      const res = await entitySearch(fetchFn, `geometry_relation=${rel}&${base}`);
+      return looksFiltered(res) ? res.list : null;
+    } catch { return null; }
+  }));
+  if (results.every((r) => r === null)) return { ...plot, entities: null };
+  const entities = dedupe(results.flatMap((r) => r || []).filter((e) => isCurrent(e, today) && e.entity !== plot.entity));
+  return { ...plot, entities, otherTitles: candidates.length - 1 };
+}
+
+/**
+ * Which checklist datasets have any records in this local authority.
+ * true = published here, false = none published (or dataset doesn't exist), null = couldn't check.
+ */
+async function fetchCoverage(fetchFn, ladEntity, datasets = CHECKLIST_DATASETS, concurrency = 6) {
+  const out = {};
+  const queue = [...datasets];
+  async function worker() {
+    while (queue.length) {
+      const ds = queue.shift();
+      try {
+        const data = await getJson(fetchFn, `${PLANNING_API}/entity.json?dataset=${ds}` +
+          `&geometry_entity=${ladEntity}&geometry_relation=intersects&limit=1&field=entity&field=dataset`, { retries: 1 });
+        const ents = data.entities || [];
+        if (data.__notFound) out[ds] = false;
+        else if (typeof data.count === 'number' && data.count > 1e6) out[ds] = null; // filter ignored
+        else if (ents.some((e) => e.dataset && e.dataset !== ds)) out[ds] = null;
+        else out[ds] = (data.count || ents.length) > 0;
+      } catch (e) {
+        out[ds] = e.status === 422 || e.status === 400 ? false : null;
+      }
+    }
+  }
+  await Promise.all(Array.from({ length: concurrency }, worker));
+  return out;
+}
+
+/**
+ * Query planning.data.gov.uk for everything at a point, on the Land Registry plot
+ * containing it, and within `nearMetres`. Returns current entities only:
+ * {at, plot, near, nearChecked, ladEntity}
+ */
+async function queryPlanningData(fetchFn, lat, lon, { nearMetres = 25, today, plot: wantPlot = true } = {}) {
   today = today || new Date().toISOString().slice(0, 10);
-  const base = 'limit=100&exclude_field=geometry';
-  const atParams = `${base}&latitude=${lat.toFixed(7)}&longitude=${lon.toFixed(7)}`;
-  const nearParams = `${base}&geometry_relation=intersects&geometry=${encodeURIComponent(bufferWkt(lat, lon, nearMetres))}`;
   const [at, nearAll] = await Promise.all([
-    fetchAllEntities(fetchFn, atParams),
-    nearMetres > 0 ? fetchAllEntities(fetchFn, nearParams) : Promise.resolve([]),
+    pointQuery(fetchFn, lat, lon),
+    nearMetres > 0 ? nearQuery(fetchFn, lat, lon, nearMetres).catch(() => null) : Promise.resolve([]),
   ]);
   const atCurrent = dedupe(at.filter((e) => isCurrent(e, today)));
   const atIds = new Set(atCurrent.map((e) => e.entity));
-  const near = dedupe(nearAll.filter((e) => isCurrent(e, today) && !atIds.has(e.entity)));
-  return { at: atCurrent, near };
+  let plot = null;
+  if (wantPlot) {
+    try { plot = await plotQuery(fetchFn, atCurrent, lat, lon, today); } catch { plot = null; }
+  }
+  const plotIds = new Set(((plot && plot.entities) || []).map((e) => e.entity));
+  const plotOnly = plot && plot.entities ? plot.entities.filter((e) => !atIds.has(e.entity)) : [];
+  const near = nearAll === null ? [] : dedupe(nearAll.filter((e) =>
+    isCurrent(e, today) && !atIds.has(e.entity) && !plotIds.has(e.entity) && (!plot || e.entity !== plot.entity)));
+  const lad = atCurrent.find((e) => e.dataset === 'local-authority-district');
+  return {
+    at: atCurrent, plot, plotOnly, near, nearChecked: nearAll !== null,
+    ladEntity: lad ? lad.entity : null, ladName: lad ? lad.name : null,
+  };
 }
 
 function dedupe(list) {
@@ -470,24 +663,44 @@ async function checkLocation(loc, deps) {
     warnings.push(`Live planning data could not be reached (${e.message}). Article 4 result uses the offline copy; other designations are not checked.`);
   }
 
+  const toArea = (e, onPlot) => ({
+    entity: e.entity, reference: e.reference, name: e.name,
+    direction: e['article-4-direction'] || null,
+    startDate: e['start-date'] || null,
+    notes: e.notes || '',
+    pdRights: e['permitted-development-rights'] || '',
+    organisation: e['organisation-entity'],
+    onPlot: !!onPlot,
+  });
+
   if (live) {
     result.dataSource = 'planning.data.gov.uk (live)';
-    const a4 = live.at.filter((e) => e.dataset === 'article-4-direction-area');
+    const isA4 = (e) => e.dataset === 'article-4-direction-area';
+    const a4Point = live.at.filter(isA4);
+    const a4Plot = live.plotOnly.filter(isA4);
     result.article4.method = 'live';
-    result.article4.status = a4.length ? 'inside' : 'outside';
-    result.article4.areas = a4.map((e) => ({
-      entity: e.entity, reference: e.reference, name: e.name,
-      direction: e['article-4-direction'] || null,
-      startDate: e['start-date'] || null,
-      notes: e.notes || '',
-      pdRights: e['permitted-development-rights'] || '',
-      organisation: e['organisation-entity'],
-    }));
-    result.designations = live.at.filter((e) => e.dataset !== 'article-4-direction-area').map(simplify);
+    result.article4.status = a4Point.length ? 'inside' : a4Plot.length ? 'plot' : 'outside';
+    result.article4.areas = [...a4Point.map((e) => toArea(e, false)), ...a4Plot.map((e) => toArea(e, true))];
+    result.designations = live.at.filter((e) => !isA4(e)).map(simplify);
+    result.plotDesignations = live.plotOnly.filter((e) => !isA4(e)).map(simplify);
     result.nearby = live.near.map(simplify);
     result.article4.near = live.near
-      .filter((e) => e.dataset === 'article-4-direction-area')
+      .filter(isA4)
       .map((e) => ({ entity: e.entity, name: e.name, reference: e.reference, direction: e['article-4-direction'] || null }));
+    if (live.plot) {
+      result.plot = {
+        entity: live.plot.entity, inspireId: live.plot.reference, geometry: live.plot.geometry,
+        areaM2: Math.round(live.plot.areaM2), checked: live.plot.entities !== null, otherTitles: live.plot.otherTitles || 0,
+      };
+      if (live.plot.entities === null) warnings.push('The Land Registry plot was found, but designations on it could not be checked. Results are for the point only.');
+    }
+    if (!live.nearChecked) warnings.push(`Things within ${nearMetres} m could not be checked this time (Planning Data gave an unreliable answer). Results are for the point and plot only.`);
+    const ward = live.at.find((e) => e.dataset === 'ward');
+    result.ward = ward ? ward.name : null;
+    result.authority = live.ladName;
+    if (live.ladEntity) {
+      result.coverage = await getCoverageCached(deps, live.ladEntity);
+    }
   }
 
   // 2. Local geometry cross-check (distance to boundary, and fallback when offline)
@@ -528,7 +741,10 @@ async function checkLocation(loc, deps) {
 
   // Borderline flags
   const edge = result.article4.areas.some((a) => a.distanceToEdge != null && a.distanceToEdge <= nearMetres);
-  if (result.article4.status === 'outside' && result.article4.near.length) {
+  if (result.article4.status === 'plot') {
+    result.article4.borderline = true;
+    warnings.push('The point is outside, but part of the Land Registry plot is inside an Article 4 area. Check which part of the property is affected.');
+  } else if (result.article4.status === 'outside' && result.article4.near.length) {
     result.article4.borderline = true;
     warnings.push(`An Article 4 boundary lies within ${nearMetres} m. Check the property footprint against the map.`);
   } else if (edge) {
@@ -558,7 +774,63 @@ async function checkLocation(loc, deps) {
   result.article4.directions = [...byRef.values()];
   result.article4.restrictions = [...new Set(result.article4.areas.map((a) => a.pdRights).filter(Boolean))];
 
+  result.checklist = buildChecklist(result, !!live);
   return result;
+}
+
+function displayName(d) {
+  if (d.dataset === 'flood-risk-zone' && d.level) return `Flood zone ${d.level}`;
+  return d.name || d.reference || '';
+}
+
+async function getCoverageCached(deps, ladEntity) {
+  const cache = deps.coverageCache;
+  if (cache && cache.has(ladEntity)) return cache.get(ladEntity);
+  const p = fetchCoverage(deps.fetch, ladEntity).catch(() => null);
+  if (cache) cache.set(ladEntity, p);
+  const cov = await p;
+  if (cache && !cov) cache.delete(ladEntity);
+  return cov;
+}
+
+/**
+ * One line per LLC question:
+ *   yes       - applies at the point
+ *   plot      - applies to part of the Land Registry plot, not the point
+ *   near      - within the tolerance distance, but not on the point or plot
+ *   no        - checked, nothing found, and this area does publish the data
+ *   not_published - nothing found because this area publishes no such data
+ *   unknown   - nothing found, couldn't confirm whether the data is published
+ *   unchecked - not checked (live data unavailable)
+ */
+function buildChecklist(result, live) {
+  const cov = result.coverage || {};
+  const a4 = result.article4;
+  return CHECKLIST.map((c) => {
+    const items = [];
+    if (c.id === 'article4') {
+      for (const a of a4.areas) items.push({ name: a.name, where: a.onPlot ? 'plot' : 'point', entity: a.entity });
+      for (const a of a4.near) items.push({ name: a.name, where: 'near', entity: a.entity });
+    } else if (live) {
+      const add = (list, where) => list.filter((d) => c.datasets.includes(d.dataset))
+        .forEach((d) => items.push({ name: displayName(d), where, entity: d.entity, grade: d.grade,
+          level: d.dataset === 'flood-risk-zone' ? null : d.level, dataset: d.dataset }));
+      add(result.designations, 'point');
+      add(result.plotDesignations || [], 'plot');
+      add(result.nearby, 'near');
+    }
+    let status;
+    if (items.some((i) => i.where === 'point')) status = 'yes';
+    else if (items.some((i) => i.where === 'plot')) status = 'plot';
+    else if (items.some((i) => i.where === 'near')) status = 'near';
+    else if (c.id === 'article4' && a4.status === 'outside') status = 'no';
+    else if (!live) status = 'unchecked';
+    else {
+      const flags = c.datasets.map((d) => cov[d]);
+      status = flags.some((f) => f === true) ? 'no' : flags.every((f) => f === false) ? 'not_published' : 'unknown';
+    }
+    return { id: c.id, section: c.section, label: c.label, status, items };
+  });
 }
 
 // Kingston's published areas don't reliably say which direction they belong to:
@@ -669,12 +941,30 @@ function rowToQuery(row, cols) {
 const yn = (b) => (b === true ? 'Y' : b === false ? 'N' : '');
 
 /** Flatten a check result into CSV output columns. */
+const STATUS_CSV = {
+  yes: 'Y', plot: 'PART OF PLOT', near: 'NEARBY', no: 'N',
+  not_published: 'NOT PUBLISHED', unknown: 'NOT CONFIRMED', unchecked: 'NOT CHECKED',
+};
+
+function checklistCell(c) {
+  const code = STATUS_CSV[c.status] || '';
+  if (!c.items.length) return code;
+  // Everything found is listed (the point first), so e.g. a Flood Zone 3 on part of
+  // the plot isn't hidden behind a Zone 2 at the point.
+  const order = { point: 0, plot: 1, near: 2 };
+  const names = [...c.items].sort((a, b) => order[a.where] - order[b.where])
+    .map((i) => {
+      const extra = [i.grade && `Grade ${i.grade}`, i.level && `Level ${i.level}`].filter(Boolean).join(', ');
+      const where = i.where === 'point' ? '' : i.where === 'plot' ? ' [plot]' : ' [nearby]';
+      return `${i.name || 'unnamed'}${extra ? ` (${extra})` : ''}${where}`;
+    });
+  return `${code}: ${[...new Set(names)].join('; ')}`;
+}
+
+/** Flatten a check result into CSV output columns. */
 function resultToRow(r) {
-  const groupNames = (g) => r.designations.filter((d) => d.group === g)
-    .map((d) => d.name ? `${d.label}: ${d.name}` : d.label).join('; ');
-  const named = (ds) => r.designations.filter((d) => d.dataset === ds).map((d) => d.name || d.reference).join('; ');
   const a4 = r.article4;
-  return {
+  const row = {
     matched_location: r.location ? r.location.label : '',
     location_precision: r.location ? r.location.precision : '',
     latitude: r.location ? r.location.lat.toFixed(6) : '',
@@ -682,32 +972,35 @@ function resultToRow(r) {
     easting: r.location && r.location.easting != null ? r.location.easting : '',
     northing: r.location && r.location.northing != null ? r.location.northing : '',
     in_kingston: yn(r.insideKingston),
-    article4: a4.status === 'inside' ? 'Y' : a4.status === 'outside' ? 'N' : '',
+    ward: r.ward || '',
+    land_registry_inspire_id: r.plot ? r.plot.inspireId : '',
+    plot_area_m2: r.plot ? r.plot.areaM2 : '',
+    article4: { inside: 'Y', plot: 'PART OF PLOT', outside: 'N' }[a4.status] || '',
     article4_borderline: yn(!!a4.borderline),
-    article4_areas: a4.areas.map((a) => a.name).join('; '),
+    article4_areas: a4.areas.map((a) => a.name + (a.onPlot ? ' [plot]' : '')).join('; '),
     article4_directions: a4.directions.map((d) => (d.reference ? `${d.reference} ${d.name}` : d.name)).join('; '),
     article4_rights_removed: (a4.restrictions || []).join('; '),
     article4_check_method: a4.method || '',
-    conservation_area: named('conservation-area'),
-    listed_building_at_point: named('listed-building'),
-    listed_buildings_nearby: r.nearby.filter((d) => d.dataset === 'listed-building').map((d) => d.name).join('; '),
-    tree_preservation: groupNames('trees'),
-    trees_nearby: r.nearby.filter((d) => d.group === 'trees').map((d) => d.name || d.reference).join('; '),
-    flood_risk: r.designations.filter((d) => d.group === 'flood').map((d) => d.level ? `${d.label} ${d.level}` : d.label).join('; '),
-    green_belt_open_land: groupNames('land'),
-    heritage_other: r.designations.filter((d) => d.group === 'heritage' && !['conservation-area', 'listed-building'].includes(d.dataset))
-      .map((d) => `${d.label}: ${d.name}`).join('; '),
-    nature_environment: groupNames('nature'),
-    plans_policy_sites: groupNames('policy'),
-    other_designations: groupNames('other'),
-    warnings: r.warnings.join(' | '),
-    data_source: r.dataSource || (a4.method ? 'offline copy' : ''),
-    checked_at: r.checkedAt,
   };
+  for (const c of r.checklist || []) {
+    if (c.id === 'article4') continue;
+    row[c.id] = checklistCell(c);
+  }
+  row.warnings = r.warnings.join(' | ');
+  row.data_source = r.dataSource || (a4.method ? 'offline copy' : '');
+  row.checked_at = r.checkedAt;
+  return row;
 }
 
 
 globalThis.A4Lookup = {
+  checklistCell,
+  CHECKLIST,
+  CHECKLIST_DATASETS,
+  buildChecklist,
+  fetchCoverage,
+  geometryArea,
+  wktParam,
   linkDirection,
   PLANNING_API,
   POSTCODES_API,

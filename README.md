@@ -6,22 +6,39 @@ A web tool to help Local Land Charges (LLC) officers at the Royal Borough of Kin
 
 ## What it does
 
-- **Single property** — type an address, postcode, grid reference (`easting, northing`) or `lat, lon`, or click the map. You get:
-  - a clear Article 4 verdict (inside / outside / *borderline – verify*), with the direction(s) and area(s) that apply
-  - every other designation at that point: conservation areas, listed buildings, tree preservation areas, flood risk zones, green belt, SSSIs, scheduled monuments, archaeological priority areas, brownfield sites and more
-  - listed buildings, protected trees and designation boundaries **within 10–50 m** of the point, so edge cases aren't missed
+- **Single property**: type an address, postcode, grid reference (`easting, northing`) or `lat, lon`, or click the map. You get:
+  - a clear Article 4 verdict (inside / outside / part of plot / *borderline, verify*), with the direction(s), the rights removed and the area(s) that apply
+  - the **HM Land Registry plot** (INSPIRE title polygon) at that point, drawn on the map, and everything that overlaps any part of it, not just the point
+  - a **search checklist** of the questions an LLC search usually asks: Article 4, local development orders, conservation area, listed building, locally listed building, building preservation notice, certificate of immunity, scheduled monument, registered park or garden, archaeological priority area, heritage at risk, tree preservation orders, ancient woodland, flood zone, air quality management area, smoke control, contaminated land, green belt, common land, local green space, SSSI, local nature reserve, brownfield register, assets of community value and neighbourhood plan areas
+  - listed buildings, protected trees and designation boundaries **within 10 to 50 m**, so edge cases aren't missed
   - a copyable text summary and a printable result for the search file
-- **Batch (CSV)** — upload a list of properties and download a results CSV with one row per property. Original columns (UPRN, search reference, etc.) are kept. Recognised location columns:
-  - `Easting`/`Northing` (or `X`/`Y`) — best; export from the LLPG by UPRN
+- **Batch (CSV)**: upload a list of properties and download a results CSV with one row per property and one column per checklist question. Original columns (UPRN, search reference, etc.) are kept. Recognised location columns:
+  - `Easting`/`Northing` (or `X`/`Y`): best; export from the LLPG by UPRN
   - `Latitude`/`Longitude`
   - `Address` (or `Address1`, `Address2`, `Town`…) plus `Postcode`
   - `Postcode` alone (checks the postcode centre only)
+- **Map layers** you can switch on: conservation areas, listed buildings and outlines, tree preservation areas and protected trees, archaeological priority areas, scheduled monuments, green belt and brownfield land.
+
+### Checklist answers
+
+| Answer | Meaning |
+|---|---|
+| Yes | Applies at the point |
+| Part of plot | Applies to part of the Land Registry plot, not the point |
+| Nearby | Within the chosen distance, but not on the plot |
+| No | Nothing found, and this area does publish that type of data |
+| Not published here | No such data is published for this area on Planning Data, so the tool can't answer. Check the council's own register |
+| Not confirmed | Nothing found, but the tool couldn't confirm whether the data is published |
+| Not checked | Live data was unavailable (only Article 4 is checked offline) |
+
+"Not published here" is worked out per council, by asking Planning Data whether each dataset has any records in that local authority. As councils publish more data, those answers turn into Yes/No automatically.
 
 ## Where the data comes from
 
 | What | Source |
 |---|---|
 | Article 4 areas & directions, conservation areas, listed buildings, TPO areas, flood zones, green belt, etc. | [planning.data.gov.uk](https://www.planning.data.gov.uk) (MHCLG Planning Data), queried live |
+| Land Registry plots | HM Land Registry INSPIRE index polygons, via Planning Data |
 | Postcode locations | [postcodes.io](https://postcodes.io) (ONS Postcode Directory) |
 | Address matching | OpenStreetMap Nominatim, limited to the borough, 1 request/second |
 | Borough boundary | London Datastore statistical GIS boundaries (OGL), in `data/` |
@@ -94,3 +111,5 @@ Created by **@ET**.
 
 
 Contains public sector information licensed under the Open Government Licence v3.0. Contains OS data © Crown copyright and database right. Map data © OpenStreetMap contributors; imagery © Esri.
+
+Land Registry plots: This information is subject to Crown copyright and database rights 2026 and is reproduced with the permission of HM Land Registry. The polygons (including the associated geometry, namely x, y co-ordinates) are subject to Crown copyright and database rights 2026 Ordnance Survey AC0000851063.

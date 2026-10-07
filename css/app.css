@@ -156,3 +156,26 @@ progress { flex: 1; min-width: 120px; height: 10px; }
 .rights p { margin: 2px 0; font-size: 0.9rem; }
 
 .credit { font-weight: 600; opacity: 1; color: #fbbf24; }
+
+/* LLC search checklist */
+.checklist h4 { margin-top: 12px; }
+.ck { list-style: none; padding: 0; margin: 0; }
+.ck-row { display: grid; grid-template-columns: 1fr auto; gap: 2px 10px; align-items: center; padding: 5px 0; border-bottom: 1px dashed var(--line); }
+.ck-row:last-child { border-bottom: 0; }
+.ck-label { font-size: 0.9rem; }
+.ck-items { grid-column: 1 / -1; margin: 2px 0 0 !important; padding-left: 12px !important; }
+.ck-items li { font-size: 0.84rem; margin: 2px 0; }
+.ck-no .ck-label, .ck-not_published .ck-label, .ck-unchecked .ck-label { color: var(--muted); }
+.chip { font-size: 0.74rem; padding: 2px 9px; border-radius: 999px; white-space: nowrap; font-weight: 600; }
+.chip-yes { background: var(--in-bg); color: var(--in-ink); }
+.chip-plot { background: var(--bd-bg); color: var(--bd-ink); }
+.chip-near { background: #e0f2fe; color: #075985; }
+.chip-no { background: var(--out-bg); color: var(--out-ink); }
+.chip-not_published { background: #f1f0ec; color: #6b6458; font-weight: 500; }
+.chip-unknown, .chip-unchecked { background: var(--unk-bg); color: var(--unk-ink); font-weight: 500; }
+.where { font-size: 0.72rem; padding: 0 6px; border-radius: 4px; margin-left: 2px; }
+.where-plot { background: #ede9fe; color: #5b21b6; }
+.where-near { background: #e0f2fe; color: #075985; }
+.records h4 { margin-top: 8px; }
+@media print { .records { display: none; } }
+.sw-plot { background: rgba(139,92,246,0.15); border: 2px dashed #7c3aed; }
